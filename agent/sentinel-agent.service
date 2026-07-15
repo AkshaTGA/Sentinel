@@ -1,0 +1,15 @@
+[Unit]
+Description=Sentinel Anti-Theft & Remote Management Agent
+After=network.target network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/akshat/Desktop/sentinel/agent
+ExecStart=/home/akshat/Desktop/sentinel/agent/venv/bin/python /home/akshat/Desktop/sentinel/agent/agent.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
