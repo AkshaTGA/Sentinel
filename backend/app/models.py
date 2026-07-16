@@ -30,6 +30,7 @@ class Device(Base):
     hostname = Column(String(255), nullable=True)
     last_seen = Column(DateTime, nullable=True)
     is_online = Column(Boolean, default=False)
+    polling_interval = Column(Integer, default=60)
     created_at = Column(DateTime, default=utc_now)
 
     owner = relationship("User", back_populates="devices")

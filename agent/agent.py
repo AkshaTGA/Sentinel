@@ -1382,7 +1382,10 @@ def usb_monitor_loop():
             print(f"[WARN] Error in USB monitoring loop: {e}")
 
 # HTTP Polling & Heartbeat Loop
+telemetry_interval = 60
+
 def telemetry_heartbeat_loop():
+    global telemetry_interval
     headers = {"X-Device-API-Key": DEVICE_API_KEY}
     
     while True:
@@ -1393,6 +1396,11 @@ def telemetry_heartbeat_loop():
             
             if res.status_code == 200:
                 data = res.json()
+                
+                # Update local interval dynamically from backend configuration
+                if "polling_interval" in data and data["polling_interval"] is not None:
+                    telemetry_interval = max(5, int(data["polling_interval"]))
+                
                 # If there are any pending commands returned in HTTP response (fallback method)
                 pending = data.get("pending_commands", [])
                 for cmd in pending:
@@ -1422,7 +1430,7 @@ def telemetry_heartbeat_loop():
         except Exception as e:
             print(f"[WARN] Telemetry heartbeat connection error: {e}")
             
-        time.sleep(60) # Telemetry intervals
+        time.sleep(telemetry_interval)
 
 # WebSocket Connection Manager
 def websocket_loop():

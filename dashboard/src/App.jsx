@@ -235,6 +235,11 @@ function MainAppContent() {
   const [restartingShell, setRestartingShell] = useState(false);
   const [shellKey, setShellKey] = useState(0); // incrementing forces terminal WS reconnect
 
+  // Dynamic status & polling states
+  const [secondsLeft, setSecondsLeft] = useState(null);
+  const [connectionStatus, setConnectionStatus] = useState('OFFLINE'); // ONLINE_WS | ONLINE_HTTP | OFFLINE
+  const [pollingIntervalInput, setPollingIntervalInput] = useState(60);
+
   // Poll intervals
   const pollTimerRef = useRef(null);
   const terminalInputRef = useRef(null);
@@ -456,6 +461,69 @@ function MainAppContent() {
     } catch (err) {
       console.warn('Polling logs failed');
     }
+  };
+
+  // Handle connection status and countdown timer calculations
+  useEffect(() => {
+    if (!selectedDevice) {
+      setSecondsLeft(null);
+      setConnectionStatus('OFFLINE');
+      setPollingIntervalInput(60);
+      return;
+    }
+
+    setPollingIntervalInput(selectedDevice.polling_interval || 60);
+
+    const updateStatus = () => {
+      if (selectedDevice.is_online) {
+        setConnectionStatus('ONLINE_WS');
+        setSecondsLeft(null);
+        return;
+      }
+
+      if (!selectedDevice.last_seen) {
+        setConnectionStatus('OFFLINE');
+        setSecondsLeft(null);
+        return;
+      }
+
+      // Calculate time difference
+      const lastSeenStr = selectedDevice.last_seen;
+      const cleanStr = lastSeenStr.endsWith('Z') || lastSeenStr.includes('+') ? lastSeenStr : `${lastSeenStr}Z`;
+      const lastSeenDate = new Date(cleanStr);
+      const diffMs = new Date() - lastSeenDate;
+      const diffSec = Math.floor(diffMs / 1000);
+
+      // Determine active status: active if seen within 2 * polling_interval + 30s buffer
+      const intervalVal = selectedDevice.polling_interval || 60;
+      const activeThreshold = intervalVal * 2 + 30;
+
+      if (diffSec < activeThreshold) {
+        setConnectionStatus('ONLINE_HTTP');
+        const remaining = Math.max(0, intervalVal - (diffSec % intervalVal));
+        setSecondsLeft(remaining);
+      } else {
+        setConnectionStatus('OFFLINE');
+        setSecondsLeft(null);
+      }
+    };
+
+    updateStatus();
+    const intervalId = setInterval(updateStatus, 1000);
+    return () => clearInterval(intervalId);
+  }, [selectedDevice]);
+
+  const getDeviceStatus = (dev) => {
+    if (dev.is_online) return 'ONLINE_WS';
+    if (!dev.last_seen) return 'OFFLINE';
+    const cleanStr = dev.last_seen.endsWith('Z') || dev.last_seen.includes('+') ? dev.last_seen : `${dev.last_seen}Z`;
+    const lastSeenDate = new Date(cleanStr);
+    const diffSec = Math.floor((new Date() - lastSeenDate) / 1000);
+    const intervalVal = dev.polling_interval || 60;
+    if (diffSec < intervalVal * 2 + 30) {
+      return 'ONLINE_HTTP';
+    }
+    return 'OFFLINE';
   };
 
   // Reset interactive operation tabs on device select
@@ -1128,7 +1196,8 @@ function MainAppContent() {
 
   const formatDate = (dateStr) => {
     if (!dateStr) return 'N/A';
-    const date = new Date(dateStr);
+    const cleanStr = dateStr.endsWith('Z') || dateStr.includes('+') ? dateStr : `${dateStr}Z`;
+    const date = new Date(cleanStr);
     return date.toLocaleString();
   };
 
@@ -1250,7 +1319,12 @@ function MainAppContent() {
                         <div className="device-name">{dev.name}</div>
                         <div className="device-hostname">{dev.hostname} ({dev.os})</div>
                       </div>
-                      <div className={`status-dot ${dev.is_online ? 'online' : 'offline'}`} />
+                      {(() => {
+                        const status = getDeviceStatus(dev);
+                        if (status === 'ONLINE_WS') return <div className="status-dot online" title="Online (WebSocket)" />;
+                        if (status === 'ONLINE_HTTP') return <div className="status-dot warning" style={{ background: 'var(--color-warning)' }} title="Online (HTTP Polling)" />;
+                        return <div className="status-dot offline" title="Offline" />;
+                      })()}
                     </div>
                   ))
                 )}
@@ -1291,9 +1365,27 @@ function MainAppContent() {
                         <Menu size={18} />
                       </button>
                       <div className="header-device-name">{selectedDevice.name}</div>
-                      <div className={`badge ${selectedDevice.is_online ? 'badge-executed' : 'badge-failed'}`}>
-                        {selectedDevice.is_online ? 'ONLINE' : 'OFFLINE'}
-                      </div>
+                      {connectionStatus === 'ONLINE_WS' && (
+                        <div className="badge badge-executed" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span className="status-dot online" style={{ margin: 0, width: '8px', height: '8px' }} />
+                          ONLINE (WS)
+                        </div>
+                      )}
+                      {connectionStatus === 'ONLINE_HTTP' && (
+                        <div className="badge badge-warning" style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(245,158,11,0.1)', color: 'var(--color-warning)', border: '1px solid rgba(245,158,11,0.2)' }}>
+                          <span className="status-dot warning" style={{ margin: 0, width: '8px', height: '8px', background: 'var(--color-warning)' }} />
+                          ONLINE (HTTP)
+                          <span style={{ fontSize: '10px', opacity: 0.8, marginLeft: '4px' }}>
+                            (Check-in: {secondsLeft}s)
+                          </span>
+                        </div>
+                      )}
+                      {connectionStatus === 'OFFLINE' && (
+                        <div className="badge badge-failed" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span className="status-dot offline" style={{ margin: 0, width: '8px', height: '8px' }} />
+                          OFFLINE
+                        </div>
+                      )}
                       <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                         ID: {selectedDevice.id}
                       </span>
@@ -1597,11 +1689,59 @@ function MainAppContent() {
                             icon={Terminal} 
                             defaultOpen={true}
                             isOnlineBadge={
-                              <div className={`badge ${selectedDevice.is_online ? 'badge-executed' : 'badge-failed'}`}>
-                                {selectedDevice.is_online ? 'Real-time WebSocket connection active' : 'Device disconnected: Commands will queue'}
-                              </div>
+                              connectionStatus === 'ONLINE_WS' ? (
+                                <div className="badge badge-executed">
+                                  Real-time WebSocket connection active
+                                </div>
+                              ) : connectionStatus === 'ONLINE_HTTP' ? (
+                                <div className="badge badge-warning" style={{ background: 'rgba(245,158,11,0.1)', color: 'var(--color-warning)', border: '1px solid rgba(245,158,11,0.2)' }}>
+                                  HTTP Polling active (Next check in {secondsLeft}s)
+                                </div>
+                              ) : (
+                                <div className="badge badge-failed">
+                                  Device disconnected: Commands will queue
+                                </div>
+                              )
                             }
                           >
+                            <div style={{ marginBottom: '20px', padding: '16px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                              <h4 style={{ margin: '0 0 10px 0', fontSize: '14px', color: 'var(--color-accent)' }}>Agent HTTP Polling Settings</h4>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                                <label style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                                  Heartbeat Interval (seconds):
+                                </label>
+                                <input 
+                                  type="number" 
+                                  min="5" 
+                                  max="3600"
+                                  className="form-input"
+                                  style={{ width: '100px', padding: '6px 10px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px' }}
+                                  value={pollingIntervalInput}
+                                  onChange={e => setPollingIntervalInput(Number(e.target.value))}
+                                />
+                                <button 
+                                  className="btn btn-primary"
+                                  style={{ padding: '6px 14px', fontSize: '13px' }}
+                                  onClick={async () => {
+                                    try {
+                                      const val = Math.max(5, Number(pollingIntervalInput));
+                                      await devicesAPI.update(selectedDevice.id, { polling_interval: val });
+                                      alert('Polling interval updated successfully!');
+                                      // Refresh device lists
+                                      fetchDevices();
+                                    } catch (err) {
+                                      alert('Failed to update polling interval: ' + err.message);
+                                    }
+                                  }}
+                                >
+                                  Update Interval
+                                </button>
+                                <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                                  (Min: 5s, Max: 3600s. Applied dynamically on the next agent heartbeat.)
+                                </span>
+                              </div>
+                            </div>
+
                             <div className="commands-grid">
                               <button className="command-button" onClick={() => triggerCommand('SCREENSHOT')}>
                                 <div className="command-button-icon"><Camera size={20} /></div>

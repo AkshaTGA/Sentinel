@@ -33,5 +33,6 @@ def upload_telemetry(
 
     return {
         "status": "success",
-        "pending_commands": commands_list
+        "pending_commands": commands_list,
+        "polling_interval": device.polling_interval
     }

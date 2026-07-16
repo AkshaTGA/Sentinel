@@ -37,6 +37,7 @@ def create_device(db: Session, device: schemas.DeviceCreate, user_id: int):
         api_key=api_key,
         os=device.os,
         hostname=device.hostname,
+        polling_interval=device.polling_interval if device.polling_interval is not None else 60,
         is_online=False
     )
     db.add(db_device)
@@ -82,7 +83,6 @@ def create_telemetry(db: Session, telemetry: schemas.TelemetryCreate, device_id:
     db_device = get_device(db, device_id)
     if db_device:
         db_device.last_seen = now
-        db_device.is_online = True
         if telemetry.os:
             db_device.os = telemetry.os
         if telemetry.hostname:

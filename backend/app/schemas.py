@@ -31,12 +31,14 @@ class DeviceBase(BaseModel):
     name: str
     os: Optional[str] = None
     hostname: Optional[str] = None
+    polling_interval: Optional[int] = 60
 
 class DeviceCreate(DeviceBase):
     pass
 
 class DeviceUpdate(BaseModel):
     name: Optional[str] = None
+    polling_interval: Optional[int] = None
 
 class Device(DeviceBase):
     user_id: int
