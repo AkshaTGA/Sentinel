@@ -91,3 +91,4 @@ Thumbs.db
 # Testing
 # =========================================
 .env.test
+Diagnosing Sentinel Server Latency.md

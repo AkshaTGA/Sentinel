@@ -49,6 +49,17 @@ if config_path:
 else:
     print("[WARN] No configuration file (.env or agent.conf) found. Using system environment variables.")
 
+def handle_unauthorized():
+    print("[FATAL] Device is not registered or API key is invalid on backend. Wiping configuration and shutting down.", file=sys.stderr)
+    try:
+        global config_path
+        if config_path and os.path.exists(config_path):
+            os.remove(config_path)
+            print(f"[INFO] Config file {config_path} successfully deleted.", file=sys.stderr)
+    except Exception as e:
+        print(f"[WARN] Failed to remove config file: {e}", file=sys.stderr)
+    os._exit(1)
+
 import pty
 import termios
 
@@ -1445,6 +1456,8 @@ def telemetry_heartbeat_loop():
                             "result_url": None,
                             "error_message": str(e)
                         }, headers=headers)
+            elif res.status_code == 401:
+                handle_unauthorized()
             else:
                 print(f"[WARN] Heartbeat failed with status: {res.status_code}")
                 
@@ -1621,8 +1634,7 @@ if __name__ == "__main__":
         telemetry_data = gather_telemetry()
         res = requests.post(verify_url, json=telemetry_data, headers=headers, timeout=10)
         if res.status_code == 401:
-            print("[FATAL] Device is not registered or API key is invalid on backend. Exiting.")
-            sys.exit(1)
+            handle_unauthorized()
         print("[+] Device registration verified successfully.")
     except requests.exceptions.RequestException as e:
         print(f"[WARN] Connection error during pre-flight registration check: {e}. Running in offline/reconnect mode.")
