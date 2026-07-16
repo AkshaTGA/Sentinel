@@ -1209,7 +1209,8 @@ function MainAppContent() {
 
   const handleCopyCommand = () => {
     const token = localStorage.getItem('sentinel_token') || '';
-    const textToCopy = `curl -sSL "${API_BASE_URL}/api/agent/setup_test_device.py?token=${token}" | python3`;
+    const hostUrl = API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin;
+    const textToCopy = `curl -fsSL "${hostUrl}/install.sh" | sudo sh -s -- --token="${token}" --url="${hostUrl}"`;
     navigator.clipboard.writeText(textToCopy);
     setCopiedId(true);
     setTimeout(() => setCopiedId(false), 2000);
@@ -2564,27 +2565,27 @@ function MainAppContent() {
         <div className="modal-overlay">
           <div className="modal-card">
             <div className="modal-header">
-              <span className="modal-title">Register New Linux Device</span>
+              <span className="modal-title">Setup / Update Linux Device</span>
               <button className="close-btn" onClick={() => setIsRegModalOpen(false)}>
                 <X size={18} />
               </button>
             </div>
             <div className="modal-body">
               <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
-                To connect a new Linux device to Sentinel, log in to the laptop, make sure python3 is installed, and run the following command in terminal:
+                To connect a new Linux device or update an existing agent, log in to the device and run the following command in terminal:
               </p>
               
               <div className="code-container">
                 <span className="code-text" style={{ wordBreak: 'break-all', fontSize: '12px' }}>
-                  {`curl -sSL "${API_BASE_URL}/api/agent/setup_test_device.py?token=${localStorage.getItem('sentinel_token') || ''}" | python3`}
+                  {`curl -fsSL "${API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin}/install.sh" | sudo sh -s -- --token="${localStorage.getItem('sentinel_token') || ''}" --url="${API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin}"`}
                 </span>
                 <button className="close-btn" style={{ color: copiedId ? 'var(--color-success)' : 'inherit' }} onClick={handleCopyCommand} title="Copy Code">
                   {copiedId ? <Check size={16} /> : <Copy size={16} />}
                 </button>
               </div>
               
-              <p style={{ fontSize: '13px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                Note: In production setups, replace 127.0.0.1 with your VPS's external IP address.
+              <p style={{ fontSize: '13px', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '12px' }}>
+                Note: This installs dependencies, creates /etc/sentinel/agent.conf, and configures a persistent systemd service. Re-running the command updates the agent executable without losing its registered identity.
               </p>
             </div>
             <div className="modal-footer">
