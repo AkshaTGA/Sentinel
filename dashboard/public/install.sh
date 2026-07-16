@@ -53,7 +53,7 @@ INSTALL_DIR="/opt/sentinel"
 if [ -f "$CONFIG_FILE" ]; then
     echo "[INFO] Existing configuration found at $CONFIG_FILE. Skipping device registration (Updates only)."
     # Load existing config to preserve values
-    source "$CONFIG_FILE"
+    . "$CONFIG_FILE"
 else
     echo "[INFO] No existing configuration found. Registering new device..."
     if [ -z "$TOKEN" ]; then
