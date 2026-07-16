@@ -1,6 +1,31 @@
 import axios from 'axios';
 
-export const API_BASE_URL = "http://localhost:8000";
+const trimTrailingSlash = (value) => value.replace(/\/+$/, '');
+
+const resolveDefaultApiOrigin = () => {
+  if (typeof window === 'undefined') {
+    return 'http://localhost:8000';
+  }
+
+  const isLocalHost =
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1';
+
+  return isLocalHost ? 'http://localhost:8000' : window.location.origin;
+};
+
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL;
+const configuredWsBaseUrl = import.meta.env.VITE_WS_BASE_URL;
+
+export const API_BASE_URL = trimTrailingSlash(
+  configuredApiBaseUrl ? configuredApiBaseUrl : resolveDefaultApiOrigin()
+);
+
+export const WS_BASE_URL = trimTrailingSlash(
+  configuredWsBaseUrl
+    ? configuredWsBaseUrl
+    : API_BASE_URL.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')
+);
 
 const api = axios.create({
   baseURL: API_BASE_URL,

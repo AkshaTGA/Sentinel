@@ -4,7 +4,7 @@ import {
   authAPI, 
   devicesAPI, 
   commandsAPI,
-  API_BASE_URL
+  WS_BASE_URL
 } from './api';
 import { 
   Monitor, 
@@ -508,9 +508,7 @@ function MainAppContent() {
       const token = localStorage.getItem('sentinel_token');
       if (!token) return;
 
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      let host = API_BASE_URL.replace(/^https?:\/\//, '');
-      const wsUrl = `${wsProtocol}//${host}/api/devices/${selectedDevice.id}/terminal/ws?token=${token}`;
+      const wsUrl = `${WS_BASE_URL}/api/devices/${selectedDevice.id}/terminal/ws?token=${token}`;
 
       console.log('Connecting terminal WebSocket to:', wsUrl);
       const ws = new WebSocket(wsUrl);
@@ -685,9 +683,7 @@ function MainAppContent() {
     const token = localStorage.getItem('sentinel_token');
     if (!token) return;
     
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    let host = API_BASE_URL.replace(/^https?:\/\//, '');
-    const wsUrl = `${wsProtocol}//${host}/api/devices/${selectedDevice.id}/terminal/ws?token=${token}`;
+    const wsUrl = `${WS_BASE_URL}/api/devices/${selectedDevice.id}/terminal/ws?token=${token}`;
     
     const ws = new WebSocket(wsUrl);
     liveStreamSocketRef.current = ws;
@@ -751,9 +747,7 @@ function MainAppContent() {
     const token = localStorage.getItem('sentinel_token');
     if (!token) return;
     
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    let host = API_BASE_URL.replace(/^https?:\/\//, '');
-    const wsUrl = `${wsProtocol}//${host}/api/devices/${selectedDevice.id}/terminal/ws?token=${token}`;
+    const wsUrl = `${WS_BASE_URL}/api/devices/${selectedDevice.id}/terminal/ws?token=${token}`;
     
     const ws = new WebSocket(wsUrl);
     liveScreenSocketRef.current = ws;
