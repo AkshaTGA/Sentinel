@@ -4,7 +4,8 @@ import {
   authAPI, 
   devicesAPI, 
   commandsAPI,
-  WS_BASE_URL
+  WS_BASE_URL,
+  API_BASE_URL
 } from './api';
 import { 
   Monitor, 
@@ -186,6 +187,7 @@ function MainAppContent() {
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
   const [confirmCmdType, setConfirmCmdType] = useState(''); // SHUTDOWN | RESTART
   const [copiedId, setCopiedId] = useState(false);
+  const [isUnregisterModalOpen, setIsUnregisterModalOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   // Interactive Operations State
@@ -1001,6 +1003,22 @@ function MainAppContent() {
     }
   };
 
+  const handleUnregisterDevice = async () => {
+    if (!selectedDevice) return;
+    try {
+      await devicesAPI.delete(selectedDevice.id);
+      setIsUnregisterModalOpen(false);
+      setSelectedDevice(null);
+      const data = await devicesAPI.list();
+      setDevices(data);
+      navigate('/');
+      alert('Device unregistered successfully.');
+    } catch (err) {
+      console.error('Unregister device error:', err);
+      alert('Failed to unregister device: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
   const handleRestartShell = async () => {
     if (!selectedDevice?.is_online) return;
     setRestartingShell(true);
@@ -1121,7 +1139,8 @@ function MainAppContent() {
   };
 
   const handleCopyCommand = () => {
-    const textToCopy = `curl -sSL http://127.0.0.1:8000/api/agent/setup_test_device.py | python3`; // simple placeholder setup command
+    const token = localStorage.getItem('sentinel_token') || '';
+    const textToCopy = `curl -sSL "${API_BASE_URL}/api/agent/setup_test_device.py?token=${token}" | python3`;
     navigator.clipboard.writeText(textToCopy);
     setCopiedId(true);
     setTimeout(() => setCopiedId(false), 2000);
@@ -1288,6 +1307,9 @@ function MainAppContent() {
                       </button>
                       <button className="btn btn-secondary" style={{ padding: '8px 12px', gap: '6px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', color: 'var(--color-danger)' }} onClick={handleClearTelemetry} title="Clear Telemetry Logs">
                         <Trash2 size={14} /> Clear Telemetry
+                      </button>
+                      <button className="btn btn-danger" style={{ padding: '8px 12px', gap: '6px' }} onClick={() => setIsUnregisterModalOpen(true)} title="Unregister and delete device permanently">
+                        <Trash2 size={14} /> Unregister Device
                       </button>
                     </div>
                   </div>
@@ -2413,8 +2435,8 @@ function MainAppContent() {
               </p>
               
               <div className="code-container">
-                <span className="code-text">
-                  curl -sSL http://127.0.0.1:8000/api/agent/setup_test_device.py | python3
+                <span className="code-text" style={{ wordBreak: 'break-all', fontSize: '12px' }}>
+                  {`curl -sSL "${API_BASE_URL}/api/agent/setup_test_device.py?token=${localStorage.getItem('sentinel_token') || ''}" | python3`}
                 </span>
                 <button className="close-btn" style={{ color: copiedId ? 'var(--color-success)' : 'inherit' }} onClick={handleCopyCommand} title="Copy Code">
                   {copiedId ? <Check size={16} /> : <Copy size={16} />}
@@ -2487,6 +2509,34 @@ function MainAppContent() {
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={() => setIsConfirmModalOpen(false)}>Cancel</button>
               <button className="btn btn-danger" onClick={sendConfirmCommand}>Confirm {confirmCmdType}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Unregister Device Modal */}
+      {isUnregisterModalOpen && (
+        <div className="modal-overlay">
+          <div className="modal-card">
+            <div className="modal-header" style={{ borderBottomColor: 'rgba(239, 68, 68, 0.2)' }}>
+              <span className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-danger)' }}>
+                <AlertTriangle size={18} /> Confirm Unregister Device
+              </span>
+              <button className="close-btn" onClick={() => setIsUnregisterModalOpen(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: '14px', lineHeight: '1.5' }}>
+                Are you absolutely sure you want to unregister and permanently delete <strong>{selectedDevice?.name}</strong>?
+              </p>
+              <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                This action is irreversible. All command history, forensic images, audio files, and telemetry logs associated with this device will be deleted from the database.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setIsUnregisterModalOpen(false)}>Cancel</button>
+              <button className="btn btn-danger" onClick={handleUnregisterDevice}>Confirm Unregister</button>
             </div>
           </div>
         </div>

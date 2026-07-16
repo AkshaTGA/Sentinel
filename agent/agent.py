@@ -660,6 +660,33 @@ def execute_command(command_type, payload):
         threading.Thread(target=restart_agent_runner, daemon=True).start()
         return {"status": "EXECUTED"}
         
+    elif command_type == "UNREGISTER_AGENT":
+        def stop_agent_runner():
+            print("[INFO] Unregistering agent: Wiping credentials and shutting down...")
+            time.sleep(1)
+            env_path = Path(__file__).resolve().parent / ".env"
+            if env_path.exists():
+                try:
+                    with open(env_path, "r") as f:
+                        lines = f.readlines()
+                    
+                    new_lines = []
+                    for line in lines:
+                        if line.startswith("DEVICE_ID=") or line.startswith("DEVICE_API_KEY="):
+                            key = line.split("=", 1)[0]
+                            new_lines.append(f"{key}=\n")
+                        else:
+                            new_lines.append(line)
+                            
+                    with open(env_path, "w") as f:
+                        f.writelines(new_lines)
+                    print("[INFO] Successfully cleared device credentials in agent/.env.")
+                except Exception as e:
+                    print(f"[ERROR] Failed to update agent/.env: {e}")
+            os._exit(0)  # Use os._exit(0) to forcefully terminate all threads
+        threading.Thread(target=stop_agent_runner, daemon=True).start()
+        return {"status": "EXECUTED"}
+        
     elif command_type == "TERMINAL":
         try:
             if shell_instance is None:
@@ -1545,6 +1572,20 @@ if __name__ == "__main__":
     if not DEVICE_API_KEY:
         print("[FATAL] Cannot run agent without DEVICE_API_KEY. Configure it in agent/.env.")
         sys.exit(1)
+        
+    # Pre-flight registration check
+    print("[INFO] Verifying device registration with backend...")
+    headers = {"X-Device-API-Key": DEVICE_API_KEY}
+    verify_url = f"{BACKEND_URL}/api/agent/telemetry"
+    try:
+        telemetry_data = gather_telemetry()
+        res = requests.post(verify_url, json=telemetry_data, headers=headers, timeout=10)
+        if res.status_code == 401:
+            print("[FATAL] Device is not registered or API key is invalid on backend. Exiting.")
+            sys.exit(1)
+        print("[+] Device registration verified successfully.")
+    except requests.exceptions.RequestException as e:
+        print(f"[WARN] Connection error during pre-flight registration check: {e}. Running in offline/reconnect mode.")
         
     # Prime CPU percent tracking
     try:

@@ -58,16 +58,34 @@ def update_device_details(
     return crud.update_device(db, device_id=device_id, device_update=device_update)
 
 @router.delete("/{device_id}")
-def delete_device(
+async def delete_device(
     device_id: str,
     current_user: schemas.User = Depends(dependencies.get_current_user),
     db: Session = Depends(database.get_db)
 ):
+    import asyncio
+    from .commands import manager
+
     device = crud.get_device(db, device_id=device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
     if device.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this device")
+        
+    # If the device is currently online, send UNREGISTER_AGENT to wipe credentials and stop it
+    if device_id in manager.active_connections:
+        try:
+            cmd_payload = {
+                "id": 999999,
+                "command_type": "UNREGISTER_AGENT",
+                "payload": None
+            }
+            await manager.send_command(device_id, cmd_payload)
+            # Sleep briefly to let the agent process the command and exit
+            await asyncio.sleep(1.0)
+        except Exception as e:
+            print(f"[WARN] Failed to send unregister command to agent: {e}")
+
     crud.delete_device(db, device_id=device_id)
     return {"status": "success", "message": "Device deleted successfully"}
 

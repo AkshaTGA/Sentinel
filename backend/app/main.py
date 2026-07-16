@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse
+from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
 from .database import engine, Base
 from .routers import auth, devices, telemetry, commands
@@ -74,3 +76,17 @@ def read_root():
         "service": "Sentinel Backend API",
         "version": "1.0.0"
     }
+
+@app.get("/api/agent/setup_test_device.py")
+def get_setup_test_device_script(token: str = None):
+    script_path = Path(__file__).resolve().parent.parent.parent / "agent" / "setup_test_device.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail="Setup script not found")
+    
+    with open(script_path, "r") as f:
+        content = f.read()
+        
+    if token:
+        content = content.replace("EMBEDDED_TOKEN = None  # DYNAMIC_TOKEN_PLACEHOLDER", f'EMBEDDED_TOKEN = "{token}"')
+        
+    return Response(content, media_type="text/plain")
