@@ -9,6 +9,16 @@ import json
 import threading
 import subprocess
 import requests
+# Monkeypatch requests to bypass Cloudflare Browser Integrity Check (Error 1010)
+original_request = requests.sessions.Session.request
+def custom_request(self, method, url, *args, **kwargs):
+    headers = kwargs.get('headers') or {}
+    if 'User-Agent' not in headers:
+        headers['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        kwargs['headers'] = headers
+    return original_request(self, method, url, *args, **kwargs)
+requests.sessions.Session.request = custom_request
+
 from pathlib import Path
 from dotenv import load_dotenv
 import select
@@ -1512,7 +1522,7 @@ def websocket_loop():
                 on_close=on_close
             )
             start_time = time.time()
-            ws.run_forever()
+            ws.run_forever(header=["User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"])
             
             # Reset backoff if we remained connected for at least 10 seconds
             if time.time() - start_time > 10.0:

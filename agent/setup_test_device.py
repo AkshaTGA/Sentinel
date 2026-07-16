@@ -10,7 +10,9 @@ import urllib.parse
 import json
 
 # Backend endpoints
+# DYNAMIC_BACKEND_PLACEHOLDER will be replaced by backend at request time, or fall back to localhost
 BACKEND_URL = "http://127.0.0.1:8000"
+BACKEND_WS_URL = "ws://127.0.0.1:8000"
 
 def get_mac_address():
     mac = uuid.getnode()
@@ -26,6 +28,9 @@ def get_device_name():
 def make_request(url, method="GET", data=None, headers=None, is_json=True):
     if headers is None:
         headers = {}
+    
+    # Bypass Cloudflare Browser Integrity Check (Error 1010)
+    headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     
     req_data = None
     if data is not None:
@@ -173,7 +178,7 @@ DEVICE_NAME={device_name}
 
 # Backend Configuration
 BACKEND_URL={BACKEND_URL}
-BACKEND_WS_URL=ws://127.0.0.1:8000
+BACKEND_WS_URL={BACKEND_WS_URL}
 DEVICE_API_KEY={api_key}
 
 # Cloudinary Integration (Required for screenshots/webcam capture)

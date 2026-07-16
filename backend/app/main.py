@@ -77,14 +77,30 @@ def read_root():
         "version": "1.0.0"
     }
 
+from fastapi import Request
+
 @app.get("/api/agent/setup_test_device.py")
-def get_setup_test_device_script(token: str = None):
+def get_setup_test_device_script(request: Request, token: str = None):
     script_path = Path(__file__).resolve().parent.parent.parent / "agent" / "setup_test_device.py"
     if not script_path.exists():
         raise HTTPException(status_code=404, detail="Setup script not found")
     
     with open(script_path, "r") as f:
         content = f.read()
+        
+    # Derive dynamic host URLs from the requesting client origin
+    base_url = str(request.base_url).rstrip('/')
+    # Force HTTPS/WSS in production (behind reverse proxy)
+    if "127.0.0.1" not in base_url and "localhost" not in base_url:
+        base_url = base_url.replace("http://", "https://")
+        
+    if base_url.startswith("https://"):
+        ws_url = base_url.replace("https://", "wss://")
+    else:
+        ws_url = base_url.replace("http://", "ws://")
+        
+    content = content.replace('BACKEND_URL = "http://127.0.0.1:8000"', f'BACKEND_URL = "{base_url}"')
+    content = content.replace('BACKEND_WS_URL = "ws://127.0.0.1:8000"', f'BACKEND_WS_URL = "{ws_url}"')
         
     if token:
         content = content.replace("EMBEDDED_TOKEN = None  # DYNAMIC_TOKEN_PLACEHOLDER", f'EMBEDDED_TOKEN = "{token}"')
