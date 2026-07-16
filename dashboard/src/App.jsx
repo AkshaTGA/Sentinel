@@ -2660,7 +2660,7 @@ dev_id = hashlib.sha256(mac.encode()).hexdigest()[:16]
 req = urllib.request.Request(
     f"{url}/api/devices",
     data=json.dumps({"id": dev_id, "name": socket.gethostname(), "hostname": socket.gethostname(), "os": "Linux"}).encode(),
-    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 )
 try:
     with urllib.request.urlopen(req) as r:
@@ -2683,7 +2683,7 @@ dev_id = hashlib.sha256(mac.encode()).hexdigest()[:16]
 req = urllib.request.Request(
     f"{url}/api/devices",
     data=json.dumps({"id": dev_id, "name": socket.gethostname(), "hostname": socket.gethostname(), "os": "Linux"}).encode(),
-    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 )
 try:
     with urllib.request.urlopen(req) as r:
