@@ -1,8 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, Query
+from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session
-from typing import Dict, List
+from typing import Dict, List, Optional
 import json
 import datetime
+import threading
+import hashlib
+import time
+import os
+import requests as http_requests
 from jose import jwt
 from .. import crud, schemas, database, dependencies, models, config
 
@@ -268,3 +273,113 @@ async def dashboard_terminal_websocket(
                 pass
     except WebSocketDisconnect:
         manager.disconnect_dashboard(device_id, websocket)
+
+# --- Server-side Cloudinary Upload Helper ---
+
+def _upload_to_cloudinary(file_bytes: bytes, resource_type: str = "image") -> str:
+    """Upload file bytes to Cloudinary and return the secure URL."""
+    cloud_name = config.CLOUDINARY_CLOUD_NAME
+    api_key = config.CLOUDINARY_API_KEY
+    api_secret = config.CLOUDINARY_API_SECRET
+
+    if not all([cloud_name, api_key, api_secret]):
+        raise Exception("Cloudinary credentials not configured on backend server.")
+
+    timestamp = int(time.time())
+    sig_string = f"timestamp={timestamp}{api_secret}"
+    signature = hashlib.sha1(sig_string.encode('utf-8')).hexdigest()
+
+    url = f"https://api.cloudinary.com/v1_1/{cloud_name}/{resource_type}/upload"
+    data = {
+        'api_key': api_key,
+        'timestamp': timestamp,
+        'signature': signature
+    }
+
+    res = http_requests.post(url, files={'file': file_bytes}, data=data, timeout=60)
+    res.raise_for_status()
+    return res.json().get("secure_url")
+
+
+def _background_cloudinary_upload(command_id: str, file_bytes: bytes, resource_type: str):
+    """Background thread worker: upload to Cloudinary then update command record."""
+    try:
+        cloud_url = _upload_to_cloudinary(file_bytes, resource_type)
+        db = next(database.get_db())
+        try:
+            cmd = crud.get_command(db, command_id)
+            if cmd:
+                cmd.result_url = cloud_url
+                cmd.status = "EXECUTED"
+                db.commit()
+                print(f"[INFO] Cloudinary upload complete for command {command_id}: {cloud_url}")
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"[ERROR] Cloudinary upload failed for command {command_id}: {e}")
+        db = next(database.get_db())
+        try:
+            cmd = crud.get_command(db, command_id)
+            if cmd:
+                cmd.status = "EXECUTED"
+                cmd.error_message = f"Cloud upload failed: {e}"
+                db.commit()
+        finally:
+            db.close()
+
+
+# --- Agent Endpoint: Upload Media via Backend Proxy ---
+
+@router.post("/api/agent/upload-media")
+async def upload_media(
+    file: UploadFile = File(...),
+    command_id: Optional[str] = Form(None),
+    command_type: Optional[str] = Form(None),
+    resource_type: Optional[str] = Form("image"),
+    device: models.Device = Depends(dependencies.get_device_by_api_key),
+    db: Session = Depends(database.get_db)
+):
+    """
+    Agent uploads media (screenshot/webcam/audio) to the backend.
+    1. If command_id is provided, update that command to status=UPLOADING immediately.
+    2. If command_id is NOT provided (auto-report), create a new command entry.
+    3. Spin up a background thread to upload the file to Cloudinary.
+    4. Return immediately so the agent doesn't block.
+    """
+    file_bytes = await file.read()
+
+    if command_id:
+        # Update existing command to UPLOADING
+        cmd = crud.get_command(db, command_id)
+        if cmd and cmd.device_id == device.id:
+            cmd.status = "UPLOADING"
+            cmd.result_url = None
+            db.commit()
+            db.refresh(cmd)
+            target_command_id = cmd.id
+        else:
+            raise HTTPException(status_code=404, detail="Command not found or not authorized")
+    else:
+        # Auto-report: create a new command entry
+        import uuid
+        db_command = models.Command(
+            id=f"auto_{uuid.uuid4()}",
+            device_id=device.id,
+            command_type=command_type or "SCREENSHOT",
+            payload="Auto-Triggered Capture",
+            status="UPLOADING",
+            result_url=None
+        )
+        db.add(db_command)
+        db.commit()
+        db.refresh(db_command)
+        target_command_id = db_command.id
+
+    # Launch background Cloudinary upload thread
+    threading.Thread(
+        target=_background_cloudinary_upload,
+        args=(target_command_id, file_bytes, resource_type or "image"),
+        daemon=True
+    ).start()
+
+    return {"status": "UPLOADING", "command_id": target_command_id}

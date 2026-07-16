@@ -373,33 +373,27 @@ def gather_telemetry():
         "nearby_wifi": get_nearby_wifi()
     }
 
-# Cloudinary Direct Signed Upload
-def upload_to_cloudinary(filepath, resource_type="image"):
-    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
-    api_key = os.getenv("CLOUDINARY_API_KEY")
-    api_secret = os.getenv("CLOUDINARY_API_SECRET")
+# Upload Media to Backend Server (which proxies to Cloudinary)
+def upload_to_backend(filepath, resource_type="image", command_id=None, command_type=None):
+    """Upload a media file to the backend server for cloud storage.
     
-    if not all([cloud_name, api_key, api_secret]):
-        raise Exception("Cloudinary credentials are not configured in Agent environment.")
+    The backend will immediately mark the command as UPLOADING and then
+    upload to Cloudinary in the background. Returns the command_id.
+    """
+    url = f"{BACKEND_URL}/api/agent/upload-media"
+    headers = {"X-Device-API-Key": DEVICE_API_KEY}
     
-    timestamp = int(time.time())
-    # Cloudinary requires alphabetical order of parameters to sign
-    # Since we are only signing 'timestamp', this is straightforward:
-    sig_string = f"timestamp={timestamp}{api_secret}"
-    signature = hashlib.sha1(sig_string.encode('utf-8')).hexdigest()
-    
-    url = f"https://api.cloudinary.com/v1_1/{cloud_name}/{resource_type}/upload"
-    data = {
-        'api_key': api_key,
-        'timestamp': timestamp,
-        'signature': signature
-    }
+    data = {"resource_type": resource_type}
+    if command_id:
+        data["command_id"] = command_id
+    if command_type:
+        data["command_type"] = command_type
     
     with open(filepath, 'rb') as f:
-        files = {'file': f}
-        res = requests.post(url, files=files, data=data, timeout=30)
+        files = {'file': (os.path.basename(filepath), f)}
+        res = requests.post(url, files=files, data=data, headers=headers, timeout=60)
     res.raise_for_status()
-    return res.json().get("secure_url")
+    return res.json()
 
 # Remote Command Execution Modules
 def get_x11_env():
@@ -650,7 +644,7 @@ def execute_lock_screen():
             continue
     raise Exception("No supported lock command found on system.")
 
-def execute_command(command_type, payload):
+def execute_command(command_type, payload, command_id=None):
     global shell_instance, is_streaming_camera, is_streaming_screen
     global is_auto_screenshot, auto_screenshot_interval
     global is_auto_webcam, auto_webcam_interval
@@ -659,9 +653,9 @@ def execute_command(command_type, payload):
     if command_type == "SCREENSHOT":
         filepath = execute_screenshot()
         try:
-            url = upload_to_cloudinary(filepath)
+            upload_to_backend(filepath, resource_type="image", command_id=command_id, command_type="SCREENSHOT")
             os.remove(filepath)
-            return {"status": "EXECUTED", "result_url": url}
+            return {"status": "UPLOADING"}
         except Exception as e:
             if os.path.exists(filepath):
                 os.remove(filepath)
@@ -670,9 +664,9 @@ def execute_command(command_type, payload):
     elif command_type == "WEBCAM":
         filepath = execute_webcam()
         try:
-            url = upload_to_cloudinary(filepath)
+            upload_to_backend(filepath, resource_type="image", command_id=command_id, command_type="WEBCAM")
             os.remove(filepath)
-            return {"status": "EXECUTED", "result_url": url}
+            return {"status": "UPLOADING"}
         except Exception as e:
             if os.path.exists(filepath):
                 os.remove(filepath)
@@ -984,9 +978,9 @@ def execute_command(command_type, payload):
             duration = 10
         filepath = execute_audio_recording(duration)
         try:
-            url = upload_to_cloudinary(filepath, resource_type="video")
+            upload_to_backend(filepath, resource_type="video", command_id=command_id, command_type="RECORD_AUDIO")
             os.remove(filepath)
-            return {"status": "EXECUTED", "result_url": url}
+            return {"status": "UPLOADING"}
         except Exception as e:
             if os.path.exists(filepath):
                 os.remove(filepath)
@@ -1080,16 +1074,9 @@ def auto_screenshot_loop():
     while is_auto_screenshot:
         try:
             ss_path = execute_screenshot()
-            url = upload_to_cloudinary(ss_path)
+            upload_to_backend(ss_path, resource_type="image", command_type="SCREENSHOT")
             os.remove(ss_path)
-            url_report = f"{BACKEND_URL}/api/agent/commands/auto-report"
-            headers = {"X-Device-API-Key": DEVICE_API_KEY}
-            requests.post(url_report, json={
-                "command_type": "SCREENSHOT",
-                "status": "EXECUTED",
-                "result_url": url
-            }, headers=headers, timeout=15)
-            print(f"[INFO] Auto-screenshot captured and uploaded: {url}")
+            print("[INFO] Auto-screenshot captured and sent to backend for upload.")
         except Exception as e:
             print(f"[WARN] Auto-screenshot failed: {e}")
         # Sleep in small increments so stopping is responsive
@@ -1106,16 +1093,9 @@ def auto_webcam_loop():
     while is_auto_webcam:
         try:
             wc_path = execute_webcam()
-            url = upload_to_cloudinary(wc_path)
+            upload_to_backend(wc_path, resource_type="image", command_type="WEBCAM")
             os.remove(wc_path)
-            url_report = f"{BACKEND_URL}/api/agent/commands/auto-report"
-            headers = {"X-Device-API-Key": DEVICE_API_KEY}
-            requests.post(url_report, json={
-                "command_type": "WEBCAM",
-                "status": "EXECUTED",
-                "result_url": url
-            }, headers=headers, timeout=15)
-            print(f"[INFO] Auto-webcam captured and uploaded: {url}")
+            print("[INFO] Auto-webcam captured and sent to backend for upload.")
         except Exception as e:
             print(f"[WARN] Auto-webcam failed: {e}")
         for _ in range(auto_webcam_interval * 10):
@@ -1501,7 +1481,7 @@ def telemetry_heartbeat_loop():
                     cmd_payload = cmd["payload"]
                     
                     try:
-                        result = execute_command(cmd_type, cmd_payload)
+                        result = execute_command(cmd_type, cmd_payload, command_id=cmd_id)
                         # Respond HTTP
                         respond_url = f"{BACKEND_URL}/api/agent/commands/{cmd_id}/respond"
                         requests.post(respond_url, json={
@@ -1574,7 +1554,7 @@ def websocket_loop():
             
             def run_and_reply():
                 try:
-                    result = execute_command(cmd_type, cmd_payload)
+                    result = execute_command(cmd_type, cmd_payload, command_id=cmd_id)
                     ws.send(json.dumps({
                         "command_id": cmd_id,
                         "status": result.get("status", "EXECUTED"),
@@ -1648,36 +1628,18 @@ def trigger_security_capture():
     # 1. Capture and upload Screenshot
     try:
         ss_path = execute_screenshot()
-        url = upload_to_cloudinary(ss_path)
+        upload_to_backend(ss_path, resource_type="image", command_type="SCREENSHOT")
         os.remove(ss_path)
-        print(f"[INFO] Security auto-screenshot uploaded successfully: {url}")
-        
-        # Save command execution log locally or report to backend command loop if desired.
-        # For auto-capture, we register it as an auto-triggered event report.
-        url_report = f"{BACKEND_URL}/api/agent/commands/auto-report"
-        headers = {"X-Device-API-Key": DEVICE_API_KEY}
-        requests.post(url_report, json={
-            "command_type": "SCREENSHOT",
-            "status": "EXECUTED",
-            "result_url": url
-        }, headers=headers, timeout=10)
+        print("[INFO] Security auto-screenshot sent to backend for upload.")
     except Exception as e:
         print(f"[WARN] Security auto-screenshot capture failed: {e}")
         
     # 2. Capture and upload Webcam
     try:
         wc_path = execute_webcam()
-        url = upload_to_cloudinary(wc_path)
+        upload_to_backend(wc_path, resource_type="image", command_type="WEBCAM")
         os.remove(wc_path)
-        print(f"[INFO] Security auto-webcam uploaded successfully: {url}")
-        
-        url_report = f"{BACKEND_URL}/api/agent/commands/auto-report"
-        headers = {"X-Device-API-Key": DEVICE_API_KEY}
-        requests.post(url_report, json={
-            "command_type": "WEBCAM",
-            "status": "EXECUTED",
-            "result_url": url
-        }, headers=headers, timeout=10)
+        print("[INFO] Security auto-webcam sent to backend for upload.")
     except Exception as e:
         print(f"[WARN] Security auto-webcam capture failed: {e}")
 

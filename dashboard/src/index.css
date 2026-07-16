@@ -772,6 +772,15 @@ button, input, select, textarea {
   to { transform: rotate(360deg); }
 }
 
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+.badge-uploading {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+
 /* Custom Scrollbars */
 ::-webkit-scrollbar {
   width: 8px;

