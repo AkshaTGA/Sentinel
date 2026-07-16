@@ -23,11 +23,14 @@ case $i in
     --url=*)
     BACKEND_URL="${i#*=}"
     # Automatically derive WS url
-    if [[ "$BACKEND_URL" == https://* ]]; then
-        BACKEND_WS_URL="wss://${BACKEND_URL#https://}"
-    elif [[ "$BACKEND_URL" == http://* ]]; then
-        BACKEND_WS_URL="ws://${BACKEND_URL#http://}"
-    fi
+    case "$BACKEND_URL" in
+        https://*)
+            BACKEND_WS_URL="wss://${BACKEND_URL#https://}"
+            ;;
+        http://*)
+            BACKEND_WS_URL="ws://${BACKEND_URL#http://}"
+            ;;
+    esac
     shift
     ;;
     *)
@@ -37,7 +40,7 @@ esac
 done
 
 # Check root privileges
-if [ "$EUID" -ne 0 ]; then
+if [ "$(id -u)" -ne 0 ]; then
   echo "[ERROR] Please run this script with sudo or as root."
   exit 1
 fi
@@ -127,7 +130,7 @@ fi
 
 # 3. Install system dependencies
 echo "[INFO] Installing system dependencies..."
-apt-get update -y
+apt-get update -y || echo "[WARN] Package index update had warnings or errors, proceeding anyway..."
 apt-get install -y python3 python3-pip python3-venv portaudio19-dev libv4l-dev ffmpeg libxext6 libsm6 scrot -y
 
 # 4. Prepare installation directory
@@ -165,6 +168,7 @@ Environment=SENTINEL_CONFIG_PATH=$CONFIG_FILE
 ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/agent.py
 Restart=always
 RestartSec=5
+RestartPreventExitStatus=99
 
 [Install]
 WantedBy=multi-user.target

@@ -58,7 +58,7 @@ def handle_unauthorized():
             print(f"[INFO] Config file {config_path} successfully deleted.", file=sys.stderr)
     except Exception as e:
         print(f"[WARN] Failed to remove config file: {e}", file=sys.stderr)
-    os._exit(1)
+    os._exit(99)
 
 import pty
 import termios
@@ -1624,7 +1624,7 @@ def trigger_security_capture():
 if __name__ == "__main__":
     if not DEVICE_API_KEY:
         print("[FATAL] Cannot run agent without DEVICE_API_KEY. Configure it in agent/.env.")
-        sys.exit(1)
+        sys.exit(99)
         
     # Pre-flight registration check
     print("[INFO] Verifying device registration with backend...")
