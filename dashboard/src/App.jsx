@@ -2632,10 +2632,10 @@ function MainAppContent() {
                     </p>
                     <div className="code-container">
                       <span className="code-text" style={{ wordBreak: 'break-all', fontSize: '12px' }}>
-                        sudo apt update && sudo apt install -y python3 python3-pip python3-venv portaudio19-dev ffmpeg scrot
+                        sudo apt update || true; sudo apt install -y python3 python3-pip python3-venv portaudio19-dev ffmpeg scrot
                       </span>
                       <button className="close-btn" style={{ color: copiedStep === 1 ? 'var(--color-success)' : 'inherit' }} 
-                        onClick={() => handleCopyStep("sudo apt update && sudo apt install -y python3 python3-pip python3-venv portaudio19-dev ffmpeg scrot", 1)} title="Copy Code">
+                        onClick={() => handleCopyStep("sudo apt update || true; sudo apt install -y python3 python3-pip python3-venv portaudio19-dev ffmpeg scrot", 1)} title="Copy Code">
                         {copiedStep === 1 ? <Check size={16} /> : <Copy size={16} />}
                       </button>
                     </div>
