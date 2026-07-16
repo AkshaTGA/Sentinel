@@ -1524,13 +1524,14 @@ def websocket_loop():
             print(f"[INFO] Connecting WebSocket to: {ws_url}")
             ws = websocket.WebSocketApp(
                 ws_url,
+                header=["User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"],
                 on_open=on_open,
                 on_message=on_message,
                 on_error=on_error,
                 on_close=on_close
             )
             start_time = time.time()
-            ws.run_forever(header=["User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"])
+            ws.run_forever()
             
             # Reset backoff if we remained connected for at least 10 seconds
             if time.time() - start_time > 10.0:
