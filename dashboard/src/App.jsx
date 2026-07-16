@@ -182,6 +182,8 @@ function MainAppContent() {
 
   // Modal & Prompt States
   const [isRegModalOpen, setIsRegModalOpen] = useState(false);
+  const [regMethod, setRegMethod] = useState('auto'); // auto | step
+  const [copiedStep, setCopiedStep] = useState(null);
   const [isMsgModalOpen, setIsMsgModalOpen] = useState(false);
   const [customMsg, setCustomMsg] = useState('');
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
@@ -1214,6 +1216,12 @@ function MainAppContent() {
     navigator.clipboard.writeText(textToCopy);
     setCopiedId(true);
     setTimeout(() => setCopiedId(false), 2000);
+  };
+
+  const handleCopyStep = (stepText, stepId) => {
+    navigator.clipboard.writeText(stepText);
+    setCopiedStep(stepId);
+    setTimeout(() => setCopiedStep(null), 2000);
   };
 
   // Derived States
@@ -2563,31 +2571,221 @@ function MainAppContent() {
       {/* Registration Command Modal */}
       {isRegModalOpen && (
         <div className="modal-overlay">
-          <div className="modal-card">
+          <div className="modal-card" style={{ maxWidth: '600px', width: '90%' }}>
             <div className="modal-header">
               <span className="modal-title">Setup / Update Linux Device</span>
               <button className="close-btn" onClick={() => setIsRegModalOpen(false)}>
                 <X size={18} />
               </button>
             </div>
-            <div className="modal-body">
-              <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
-                To connect a new Linux device or update an existing agent, log in to the device and run the following command in terminal:
-              </p>
-              
-              <div className="code-container">
-                <span className="code-text" style={{ wordBreak: 'break-all', fontSize: '12px' }}>
-                  {`curl -fsSL "${API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin}/install.sh" | sudo sh -s -- --token="${localStorage.getItem('sentinel_token') || ''}" --url="${API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin}"`}
-                </span>
-                <button className="close-btn" style={{ color: copiedId ? 'var(--color-success)' : 'inherit' }} onClick={handleCopyCommand} title="Copy Code">
-                  {copiedId ? <Check size={16} /> : <Copy size={16} />}
+            
+            <div className="modal-body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', gap: '10px', marginBottom: '15px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+                <button 
+                  className={`btn \${regMethod === 'auto' ? 'btn-primary' : 'btn-secondary'}`} 
+                  style={{ flex: 1, padding: '8px 12px', fontSize: '13px' }}
+                  onClick={() => setRegMethod('auto')}
+                >
+                  Quick Setup (1-Step)
+                </button>
+                <button 
+                  className={`btn \${regMethod === 'step' ? 'btn-primary' : 'btn-secondary'}`} 
+                  style={{ flex: 1, padding: '8px 12px', fontSize: '13px' }}
+                  onClick={() => setRegMethod('step')}
+                >
+                  Step-by-Step Guide
                 </button>
               </div>
-              
-              <p style={{ fontSize: '13px', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '12px' }}>
-                Note: This installs dependencies, creates /etc/sentinel/agent.conf, and configures a persistent systemd service. Re-running the command updates the agent executable without losing its registered identity.
-              </p>
+
+              {regMethod === 'auto' ? (
+                <>
+                  <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+                    To connect a new Linux device or update an existing agent quickly, run the following command in terminal:
+                  </p>
+                  
+                  <div className="code-container">
+                    <span className="code-text" style={{ wordBreak: 'break-all', fontSize: '12px' }}>
+                      {`curl -fsSL "${API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin}/install.sh" | sudo sh -s -- --token="${localStorage.getItem('sentinel_token') || ''}" --url="${API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin}"`}
+                    </span>
+                    <button className="close-btn" style={{ color: copiedId ? 'var(--color-success)' : 'inherit' }} onClick={handleCopyCommand} title="Copy Code">
+                      {copiedId ? <Check size={16} /> : <Copy size={16} />}
+                    </button>
+                  </div>
+                  
+                  <p style={{ fontSize: '13px', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '12px' }}>
+                    Note: This script will automate system package updates, dependency installation, device registration, and systemd service generation.
+                  </p>
+                </>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                  <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: '1.5', marginBottom: '5px' }}>
+                    Follow these sequential steps in your device's terminal to register and install the agent manually. This is recommended if the automated script fails due to other broken system packages.
+                  </p>
+
+                  {/* Step 1 */}
+                  <div style={{ borderLeft: '2px solid var(--color-primary)', paddingLeft: '12px' }}>
+                    <div style={{ fontWeight: '600', fontSize: '13px', color: 'var(--color-primary)', marginBottom: '5px' }}>
+                      Step 1: Install System Dependencies
+                    </div>
+                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '5px' }}>
+                      Installs native system tools for display capture, audio recording, and webcam.
+                    </p>
+                    <div className="code-container">
+                      <span className="code-text" style={{ wordBreak: 'break-all', fontSize: '12px' }}>
+                        sudo apt update && sudo apt install -y python3 python3-pip python3-venv portaudio19-dev ffmpeg scrot
+                      </span>
+                      <button className="close-btn" style={{ color: copiedStep === 1 ? 'var(--color-success)' : 'inherit' }} 
+                        onClick={() => handleCopyStep("sudo apt update && sudo apt install -y python3 python3-pip python3-venv portaudio19-dev ffmpeg scrot", 1)} title="Copy Code">
+                        {copiedStep === 1 ? <Check size={16} /> : <Copy size={16} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Step 2 */}
+                  <div style={{ borderLeft: '2px solid var(--color-primary)', paddingLeft: '12px' }}>
+                    <div style={{ fontWeight: '600', fontSize: '13px', color: 'var(--color-primary)', marginBottom: '5px' }}>
+                      Step 2: Register Device & Create Configuration
+                    </div>
+                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '5px' }}>
+                      Connects your hardware profile with your Sentinel user account using Python.
+                    </p>
+                    <div className="code-container">
+                      <span className="code-text" style={{ wordBreak: 'break-all', fontSize: '11px', whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+                        {`sudo python3 -c '
+import urllib.request, json, socket, uuid, os, hashlib
+token = "${localStorage.getItem('sentinel_token') || ''}"
+url = "${API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin}"
+mac = ":".join(("%012X" % uuid.getnode())[i:i+2] for i in range(0, 12, 2))
+dev_id = hashlib.sha256(mac.encode()).hexdigest()[:16]
+req = urllib.request.Request(
+    f"{url}/api/devices",
+    data=json.dumps({"id": dev_id, "name": socket.gethostname(), "hostname": socket.gethostname(), "os": "Linux"}).encode(),
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+)
+try:
+    with urllib.request.urlopen(req) as r:
+        res = json.loads(r.read().decode())
+        os.makedirs("/etc/sentinel", exist_ok=True)
+        with open("/etc/sentinel/agent.conf", "w") as f:
+            f.write(f"BACKEND_URL={url}\\nBACKEND_WS_URL={url.replace(\"http\", \"ws\")}\\nDEVICE_ID={dev_id}\\nDEVICE_API_KEY={res[\"api_key\"]}\\nDEVICE_NAME={socket.gethostname()}\\n")
+        print("[SUCCESS] Device registered and config saved to /etc/sentinel/agent.conf")
+except Exception as e:
+    print("[ERROR] Registration failed:", e)
+'`}
+                      </span>
+                      <button className="close-btn" style={{ color: copiedStep === 2 ? 'var(--color-success)' : 'inherit' }} 
+                        onClick={() => handleCopyStep(`sudo python3 -c '
+import urllib.request, json, socket, uuid, os, hashlib
+token = "${localStorage.getItem('sentinel_token') || ''}"
+url = "${API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin}"
+mac = ":".join(("%012X" % uuid.getnode())[i:i+2] for i in range(0, 12, 2))
+dev_id = hashlib.sha256(mac.encode()).hexdigest()[:16]
+req = urllib.request.Request(
+    f"{url}/api/devices",
+    data=json.dumps({"id": dev_id, "name": socket.gethostname(), "hostname": socket.gethostname(), "os": "Linux"}).encode(),
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+)
+try:
+    with urllib.request.urlopen(req) as r:
+        res = json.loads(r.read().decode())
+        os.makedirs("/etc/sentinel", exist_ok=True)
+        with open("/etc/sentinel/agent.conf", "w") as f:
+            f.write(f"BACKEND_URL={url}\\nBACKEND_WS_URL={url.replace(\"http\", \"ws\")}\\nDEVICE_ID={dev_id}\\nDEVICE_API_KEY={res[\"api_key\"]}\\nDEVICE_NAME={socket.gethostname()}\\n")
+        print("[SUCCESS] Device registered and config saved to /etc/sentinel/agent.conf")
+except Exception as e:
+    print("[ERROR] Registration failed:", e)
+'`, 2)} title="Copy Code">
+                        {copiedStep === 2 ? <Check size={16} /> : <Copy size={16} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Step 3 */}
+                  <div style={{ borderLeft: '2px solid var(--color-primary)', paddingLeft: '12px' }}>
+                    <div style={{ fontWeight: '600', fontSize: '13px', color: 'var(--color-primary)', marginBottom: '5px' }}>
+                      Step 3: Setup Virtualenv & Download Agent
+                    </div>
+                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '5px' }}>
+                      Downloads latest code and isolates python packages inside `/opt/sentinel`.
+                    </p>
+                    <div className="code-container">
+                      <span className="code-text" style={{ wordBreak: 'break-all', fontSize: '12px', whiteSpace: 'pre-wrap' }}>
+                        {`sudo mkdir -p /opt/sentinel && cd /opt/sentinel && \\
+sudo python3 -m venv venv && \\
+sudo curl -s -o requirements.txt "${API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin}/requirements.txt" && \\
+sudo curl -s -o agent.py "${API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin}/agent.py" && \\
+sudo ./venv/bin/pip3 install --upgrade pip && \\
+sudo ./venv/bin/pip3 install -r requirements.txt`}
+                      </span>
+                      <button className="close-btn" style={{ color: copiedStep === 3 ? 'var(--color-success)' : 'inherit' }} 
+                        onClick={() => handleCopyStep(`sudo mkdir -p /opt/sentinel && cd /opt/sentinel && sudo python3 -m venv venv && sudo curl -s -o requirements.txt "${API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin}/requirements.txt" && sudo curl -s -o agent.py "${API_BASE_URL.startsWith('http') ? API_BASE_URL : window.location.origin}/agent.py" && sudo ./venv/bin/pip3 install --upgrade pip && sudo ./venv/bin/pip3 install -r requirements.txt`, 3)} title="Copy Code">
+                        {copiedStep === 3 ? <Check size={16} /> : <Copy size={16} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Step 4 */}
+                  <div style={{ borderLeft: '2px solid var(--color-primary)', paddingLeft: '12px' }}>
+                    <div style={{ fontWeight: '600', fontSize: '13px', color: 'var(--color-primary)', marginBottom: '5px' }}>
+                      Step 4: Configure Daemon & Run Service
+                    </div>
+                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '5px' }}>
+                      Registers the agent as a background systemd service to run automatically on system boot.
+                    </p>
+                    <div className="code-container">
+                      <span className="code-text" style={{ wordBreak: 'break-all', fontSize: '11px', whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+                        {`sudo tee /etc/systemd/system/sentinel-agent.service > /dev/null <<EOF
+[Unit]
+Description=Sentinel Device Remote Administration Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sentinel
+Environment=SENTINEL_CONFIG_PATH=/etc/sentinel/agent.conf
+ExecStart=/opt/sentinel/venv/bin/python3 /opt/sentinel/agent.py
+Restart=always
+RestartSec=5
+RestartPreventExitStatus=99
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable sentinel-agent
+sudo systemctl restart sentinel-agent`}
+                      </span>
+                      <button className="close-btn" style={{ color: copiedStep === 4 ? 'var(--color-success)' : 'inherit' }} 
+                        onClick={() => handleCopyStep(`sudo tee /etc/systemd/system/sentinel-agent.service > /dev/null <<EOF
+[Unit]
+Description=Sentinel Device Remote Administration Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sentinel
+Environment=SENTINEL_CONFIG_PATH=/etc/sentinel/agent.conf
+ExecStart=/opt/sentinel/venv/bin/python3 /opt/sentinel/agent.py
+Restart=always
+RestartSec=5
+RestartPreventExitStatus=99
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable sentinel-agent
+sudo systemctl restart sentinel-agent`, 4)} title="Copy Code">
+                        {copiedStep === 4 ? <Check size={16} /> : <Copy size={16} />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
+            
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={() => setIsRegModalOpen(false)}>Close</button>
             </div>
