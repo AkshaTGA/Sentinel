@@ -715,7 +715,14 @@ function MainAppContent() {
   const runTerminalCommand = async (e) => {
     e?.preventDefault();
     const cmd = terminalInput;
+    if (!cmd.trim()) return;
     setTerminalInput('');
+    
+    // Add command to terminal output display as input line
+    setTerminalOutputs(prev => [
+      ...prev,
+      { type: 'input', command: cmd, output: '' }
+    ]);
     
     const ws = terminalSocketRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -727,18 +734,25 @@ function MainAppContent() {
         terminalInputRef.current?.focus();
       }, 50);
     } else {
-      setTerminalOutputs(prev => {
-        if (prev.length > 0 && prev[prev.length - 1].type === 'output') {
-          const updated = [...prev];
-          updated[updated.length - 1] = {
-            ...updated[updated.length - 1],
-            output: updated[updated.length - 1].output + '\nTerminal WebSocket is not connected. Make sure the device is online.\n'
-          };
-          return updated;
-        } else {
-          return [...prev, { command: '', output: 'Terminal WebSocket is not connected. Make sure the device is online.', type: 'error' }];
-        }
-      });
+      // Fallback: execute terminal command over HTTP using command dispatch
+      setTerminalOutputs(prev => [
+        ...prev,
+        { type: 'output', command: '', output: '\r\n[HTTP Fallback] Terminal WebSocket is closed. Executing command over HTTP...\r\n' }
+      ]);
+      try {
+        const output = await dispatchAndWait('TERMINAL', cmd);
+        // Format newlines for terminal component display
+        const formattedOutput = (output || '').replace(/\r?\n/g, '\r\n');
+        setTerminalOutputs(prev => [
+          ...prev,
+          { type: 'output', command: '', output: formattedOutput + '\r\n' }
+        ]);
+      } catch (err) {
+        setTerminalOutputs(prev => [
+          ...prev,
+          { type: 'error', command: '', output: `\r\nError executing command over HTTP: ${err.message}\r\n` }
+        ]);
+      }
     }
   };
 
