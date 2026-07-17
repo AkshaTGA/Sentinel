@@ -26,20 +26,25 @@ cv2 = None
 try:
     import cv2
 except Exception as e:
-    print(f"[INFO] Initial cv2 import failed: {e}. Checking NumPy version...")
+    error_str = str(e)
+    print(f"[INFO] Initial cv2 import failed: {e}. Attempting self-healing...")
     try:
-        import numpy
-        if hasattr(numpy, "__version__") and int(numpy.__version__.split('.')[0]) >= 2:
-            import subprocess
-            print("[INFO] Downgrading NumPy to < 2.0.0 for cv2 compatibility...")
-            res = subprocess.run(["/opt/sentinel/venv/bin/pip", "install", "numpy>=1.20,<2.0.0"], capture_output=True, text=True)
-            if res.returncode == 0:
-                print("[INFO] NumPy downgraded successfully. Re-importing cv2...")
-                import cv2
-            else:
-                print(f"[WARN] pip install returned error: {res.stderr}")
+        import subprocess
+        # Use sys.executable to run pip in the current virtual environment robustly
+        print("[INFO] Downgrading/Installing NumPy < 2.0.0 and reinstating OpenCV...")
+        res = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "numpy>=1.20,<2.0.0", "opencv-python-headless"],
+            capture_output=True,
+            text=True
+        )
+        if res.returncode == 0:
+            print("[INFO] Dependencies installed successfully. Restarting agent to apply changes...")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        else:
+            print(f"[WARN] pip install returned error: {res.stderr}")
     except Exception as inner_e:
-        print(f"[WARN] NumPy auto-downgrade self-healing failed: {inner_e}")
+        print(f"[WARN] Self-healing failed: {inner_e}")
+
 
 # Load agent environment variables
 config_path = None
@@ -488,6 +493,23 @@ def wrap_user_cmd(cmd, env, username):
         return ["sudo", "-u", username, "env"] + env_args + cmd
     return cmd
 
+def resolve_user_path(path_str):
+    if not path_str:
+        return Path("/")
+    
+    # If the path starts with '~', resolve it to the interactive user's home dir if running as root
+    if path_str.startswith("~"):
+        try:
+            env, username = get_x11_env()
+            if username and username != "root":
+                import pwd
+                user_home = pwd.getpwnam(username).pw_dir
+                path_str = path_str.replace("~", user_home, 1)
+        except Exception as e:
+            print(f"[WARN] Failed to resolve user home directory for path expansion: {e}")
+            
+    return Path(path_str).expanduser().resolve()
+
 environ_lock = threading.Lock()
 
 def execute_screenshot():
@@ -616,8 +638,12 @@ def trigger_alarm():
     if alarm_process and alarm_process.poll() is None:
         return True
     try:
-        # Run speaker-test to generate continuous sine tone until killed
-        alarm_process = subprocess.Popen("speaker-test -t sine -f 800", shell=True)
+        env, username = get_x11_env()
+        # speaker-test should be run as the session user to access their PulseAudio/PipeWire session
+        cmd = wrap_user_cmd(["speaker-test", "-t", "sine", "-f", "800"], env, username)
+        alarm_process = subprocess.Popen(
+            cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
         return True
     except Exception:
         return False
@@ -800,7 +826,7 @@ def execute_command(command_type, payload, command_id=None):
 
     elif command_type == "FILE_BROWSER":
         try:
-            path = Path(payload or "/").expanduser().resolve()
+            path = resolve_user_path(payload or "/")
             if not path.exists():
                 raise Exception(f"Path does not exist: {path}")
             if path.is_dir():
@@ -931,7 +957,7 @@ def execute_command(command_type, payload, command_id=None):
 
     elif command_type == "DOWNLOAD_FILE":
         try:
-            path = Path(payload).expanduser().resolve()
+            path = resolve_user_path(payload)
             if not path.exists():
                 raise Exception(f"Path does not exist: {path}")
             
