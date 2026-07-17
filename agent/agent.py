@@ -22,10 +22,24 @@ requests.sessions.Session.request = custom_request
 from pathlib import Path
 from dotenv import load_dotenv
 import select
+cv2 = None
 try:
     import cv2
-except ImportError:
-    cv2 = None
+except Exception as e:
+    print(f"[INFO] Initial cv2 import failed: {e}. Checking NumPy version...")
+    try:
+        import numpy
+        if hasattr(numpy, "__version__") and int(numpy.__version__.split('.')[0]) >= 2:
+            import subprocess
+            print("[INFO] Downgrading NumPy to < 2.0.0 for cv2 compatibility...")
+            res = subprocess.run(["/opt/sentinel/venv/bin/pip", "install", "numpy>=1.20,<2.0.0"], capture_output=True, text=True)
+            if res.returncode == 0:
+                print("[INFO] NumPy downgraded successfully. Re-importing cv2...")
+                import cv2
+            else:
+                print(f"[WARN] pip install returned error: {res.stderr}")
+    except Exception as inner_e:
+        print(f"[WARN] NumPy auto-downgrade self-healing failed: {inner_e}")
 
 # Load agent environment variables
 config_path = None
@@ -464,6 +478,16 @@ def get_x11_env():
             pass
     return env, "root"
 
+def wrap_user_cmd(cmd, env, username):
+    uid = os.getuid()
+    if uid == 0 and username != "root":
+        env_args = []
+        for k in ["DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]:
+            if k in env and env[k]:
+                env_args.append(f"{k}={env[k]}")
+        return ["sudo", "-u", username, "env"] + env_args + cmd
+    return cmd
+
 environ_lock = threading.Lock()
 
 def execute_screenshot():
@@ -474,17 +498,12 @@ def execute_screenshot():
     # 1. Try gnome-screenshot (standard on GNOME systems, supports Wayland natively)
     try:
         # Disable visual flash and shutter sound before screenshot (ignore fail)
-        gsettings_cmd_anim = ["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", "false"]
-        gsettings_cmd_sounds = ["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", "false"]
-        if uid == 0 and username != "root":
-            gsettings_cmd_anim = ["sudo", "-u", username] + gsettings_cmd_anim
-            gsettings_cmd_sounds = ["sudo", "-u", username] + gsettings_cmd_sounds
+        gsettings_cmd_anim = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", "false"], env, username)
+        gsettings_cmd_sounds = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", "false"], env, username)
         subprocess.run(gsettings_cmd_anim, env=env, stderr=subprocess.DEVNULL)
         subprocess.run(gsettings_cmd_sounds, env=env, stderr=subprocess.DEVNULL)
 
-        cmd = ["gnome-screenshot", "-f", filename]
-        if uid == 0 and username != "root":
-            cmd = ["sudo", "-u", username] + cmd
+        cmd = wrap_user_cmd(["gnome-screenshot", "-f", filename], env, username)
         subprocess.run(cmd, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(filename):
             return filename
@@ -493,9 +512,7 @@ def execute_screenshot():
 
     # 2. Try grim (Sway / Hyprland Wayland compositor screenshot tool)
     try:
-        cmd = ["grim", filename]
-        if uid == 0 and username != "root":
-            cmd = ["sudo", "-u", username] + cmd
+        cmd = wrap_user_cmd(["grim", filename], env, username)
         subprocess.run(cmd, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(filename):
             return filename
@@ -504,9 +521,7 @@ def execute_screenshot():
 
     # 3. Try scrot (very lightweight X11 fallback tool)
     try:
-        cmd = ["scrot", filename]
-        if uid == 0 and username != "root":
-            cmd = ["sudo", "-u", username] + cmd
+        cmd = wrap_user_cmd(["scrot", filename], env, username)
         subprocess.run(cmd, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(filename):
             return filename
@@ -539,7 +554,14 @@ def execute_screenshot():
                 os.environ.pop("XAUTHORITY", None)
 
 def execute_webcam():
-    import cv2
+    global cv2
+    if cv2 is None:
+        try:
+            import cv2
+        except Exception as e:
+            raise Exception(f"OpenCV (cv2) is not available: {e}")
+    if cv2 is None:
+        raise Exception("OpenCV (cv2) library is not available.")
     filename = f"/tmp/webcam_{int(time.time())}.png"
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -565,9 +587,7 @@ def display_message(text):
         
     # Attempt zenity warning (list form — no shell injection)
     try:
-        cmd = ["zenity", "--warning", f"--text={text}", "--title=Sentinel Remote System", "--timeout=30"]
-        if uid == 0 and username != "root":
-            cmd = ["sudo", "-u", username] + cmd
+        cmd = wrap_user_cmd(["zenity", "--warning", f"--text={text}", "--title=Sentinel Remote System", "--timeout=30"], env, username)
         subprocess.Popen(
             cmd,
             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -578,9 +598,7 @@ def display_message(text):
         
     # Fallback to notify-send (list form)
     try:
-        cmd = ["notify-send", "Sentinel Remote System", text]
-        if uid == 0 and username != "root":
-            cmd = ["sudo", "-u", username] + cmd
+        cmd = wrap_user_cmd(["notify-send", "Sentinel Remote System", text], env, username)
         subprocess.Popen(
             cmd,
             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -627,16 +645,17 @@ def execute_lock_screen():
     env, username = get_x11_env()
     uid = os.getuid()
     lock_commands = [
-        "loginctl lock-session",
-        "xdg-screensaver lock",
-        "gnome-screensaver-command -l",
-        "dbus-send --type=method_call --dest=org.gnome.ScreenSaver /org/gnome/ScreenSaver org.gnome.ScreenSaver.Lock"
+        ["loginctl", "lock-sessions"],
+        ["loginctl", "lock-session"],
+        ["xdg-screensaver", "lock"],
+        ["gnome-screensaver-command", "-l"],
+        ["dbus-send", "--type=method_call", "--dest=org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver.Lock"]
     ]
-    for cmd_str in lock_commands:
+    for cmd in lock_commands:
         try:
-            cmd = cmd_str.split()
-            if uid == 0 and username != "root":
-                cmd = ["sudo", "-u", username] + cmd
+            # For loginctl, running as root directly is better; for others, run as user session
+            if cmd[0] != "loginctl":
+                cmd = wrap_user_cmd(cmd, env, username)
             res = subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if res.returncode == 0:
                 return True
@@ -851,18 +870,14 @@ def execute_command(command_type, payload, command_id=None):
             if payload:
                 # Set clipboard (Wayland then X11)
                 try:
-                    cmd = ["wl-copy"]
-                    if uid == 0 and username != "root":
-                        cmd = ["sudo", "-u", username] + cmd
+                    cmd = wrap_user_cmd(["wl-copy"], env, username)
                     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, env=env)
                     p.communicate(input=payload.encode('utf-8'))
                     return {"status": "EXECUTED", "result_url": f"Clipboard set to: {payload[:50]}..."}
                 except Exception:
                     pass
                 try:
-                    cmd = ["xclip", "-selection", "clipboard"]
-                    if uid == 0 and username != "root":
-                        cmd = ["sudo", "-u", username] + cmd
+                    cmd = wrap_user_cmd(["xclip", "-selection", "clipboard"], env, username)
                     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, env=env)
                     p.communicate(input=payload.encode('utf-8'))
                     return {"status": "EXECUTED", "result_url": f"Clipboard set to: {payload[:50]}..."}
@@ -872,9 +887,7 @@ def execute_command(command_type, payload, command_id=None):
                 # Get clipboard
                 # 1. Try Wayland wl-paste (prefer text target)
                 try:
-                    cmd = ["wl-paste", "-t", "text/plain"]
-                    if uid == 0 and username != "root":
-                        cmd = ["sudo", "-u", username] + cmd
+                    cmd = wrap_user_cmd(["wl-paste", "-t", "text/plain"], env, username)
                     out = subprocess.check_output(cmd, env=env, stderr=subprocess.DEVNULL)
                     decoded = out.decode('utf-8', errors='replace')
                     if not is_binary_string(decoded):
@@ -882,9 +895,7 @@ def execute_command(command_type, payload, command_id=None):
                 except Exception:
                     pass
                 try:
-                    cmd = ["wl-paste"]
-                    if uid == 0 and username != "root":
-                        cmd = ["sudo", "-u", username] + cmd
+                    cmd = wrap_user_cmd(["wl-paste"], env, username)
                     out = subprocess.check_output(cmd, env=env, stderr=subprocess.DEVNULL)
                     decoded = out.decode('utf-8', errors='replace')
                     if not is_binary_string(decoded):
@@ -895,9 +906,7 @@ def execute_command(command_type, payload, command_id=None):
                 # 2. Try X11 xclip targets
                 for target in ["UTF8_STRING", "TEXT", "STRING"]:
                     try:
-                        cmd = ["xclip", "-o", "-selection", "clipboard", "-t", target]
-                        if uid == 0 and username != "root":
-                            cmd = ["sudo", "-u", username] + cmd
+                        cmd = wrap_user_cmd(["xclip", "-o", "-selection", "clipboard", "-t", target], env, username)
                         out = subprocess.check_output(cmd, env=env, stderr=subprocess.DEVNULL)
                         decoded = out.decode('utf-8', errors='replace')
                         if not is_binary_string(decoded):
@@ -907,9 +916,7 @@ def execute_command(command_type, payload, command_id=None):
                 
                 # Final raw fallback, with binary check
                 try:
-                    cmd = ["xclip", "-o", "-selection", "clipboard"]
-                    if uid == 0 and username != "root":
-                        cmd = ["sudo", "-u", username] + cmd
+                    cmd = wrap_user_cmd(["xclip", "-o", "-selection", "clipboard"], env, username)
                     out = subprocess.check_output(cmd, env=env, stderr=subprocess.DEVNULL)
                     decoded = out.decode('utf-8', errors='replace')
                     if is_binary_string(decoded):
@@ -1131,17 +1138,12 @@ def capture_screen_frame(env, username):
     # 1. Try gnome-screenshot (works on GNOME/X11/Wayland sessions)
     print("[DEBUG] Trying gnome-screenshot (silent)...")
     try:
-        gsettings_cmd_anim = ["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", "false"]
-        gsettings_cmd_sounds = ["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", "false"]
-        if uid == 0 and username != "root":
-            gsettings_cmd_anim = ["sudo", "-u", username] + gsettings_cmd_anim
-            gsettings_cmd_sounds = ["sudo", "-u", username] + gsettings_cmd_sounds
+        gsettings_cmd_anim = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", "false"], combined_env, username)
+        gsettings_cmd_sounds = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", "false"], combined_env, username)
         subprocess.run(gsettings_cmd_anim, env=combined_env, stderr=subprocess.DEVNULL)
         subprocess.run(gsettings_cmd_sounds, env=combined_env, stderr=subprocess.DEVNULL)
 
-        cmd = ["gnome-screenshot", "-f", filename]
-        if uid == 0 and username != "root":
-            cmd = ["sudo", "-u", username] + cmd
+        cmd = wrap_user_cmd(["gnome-screenshot", "-f", filename], combined_env, username)
         result = subprocess.run(cmd, env=combined_env, check=False,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"[DEBUG] gnome-screenshot returncode: {result.returncode}")
@@ -1159,9 +1161,7 @@ def capture_screen_frame(env, username):
     # 2. Try Flameshot (silent, XWayland)
     print("[DEBUG] Trying Flameshot...")
     try:
-        cmd = ["flameshot", "full", "-p", filename]
-        if uid == 0 and username != "root":
-            cmd = ["sudo", "-u", username] + cmd
+        cmd = wrap_user_cmd(["flameshot", "full", "-p", filename], combined_env, username)
         result = subprocess.run(cmd, env=combined_env, check=False,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"[DEBUG] Flameshot returncode: {result.returncode}")
@@ -1179,9 +1179,7 @@ def capture_screen_frame(env, username):
     # 3. Try Grim (Wayland native fallback)
     print("[DEBUG] Trying Grim...")
     try:
-        cmd = ["grim", filename]
-        if uid == 0 and username != "root":
-            cmd = ["sudo", "-u", username] + cmd
+        cmd = wrap_user_cmd(["grim", filename], combined_env, username)
         result = subprocess.run(cmd, env=combined_env, check=False,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"[DEBUG] Grim returncode: {result.returncode}")
@@ -1199,9 +1197,7 @@ def capture_screen_frame(env, username):
     # 4. Try scrot
     print("[DEBUG] Trying scrot...")
     try:
-        cmd = ["scrot", filename]
-        if uid == 0 and username != "root":
-            cmd = ["sudo", "-u", username] + cmd
+        cmd = wrap_user_cmd(["scrot", filename], combined_env, username)
         result = subprocess.run(cmd, env=combined_env, check=False,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"[DEBUG] scrot returncode: {result.returncode}")
@@ -1335,9 +1331,7 @@ def execute_audio_recording(duration_secs=10):
     try:
         # Recording using arecord (standard on Linux, doesn't require PyAudio build)
         # S16_LE (16-bit little endian), 16000Hz (standard voice rate), mono
-        cmd = ["arecord", "-d", str(duration_secs), "-f", "S16_LE", "-r", "16000", "-c", "1", filename]
-        if uid == 0 and username != "root":
-            cmd = ["sudo", "-u", username] + cmd
+        cmd = wrap_user_cmd(["arecord", "-d", str(duration_secs), "-f", "S16_LE", "-r", "16000", "-c", "1", filename], env, username)
         subprocess.run(cmd, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(filename):
             return filename
