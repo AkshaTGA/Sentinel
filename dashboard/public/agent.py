@@ -517,6 +517,23 @@ def execute_screenshot():
     env, username = get_x11_env()
     uid = os.getuid()
     
+    # Store initial settings
+    initial_anim = "true"
+    initial_sounds = "true"
+    try:
+        cmd_get_anim = wrap_user_cmd(["gsettings", "get", "org.gnome.desktop.interface", "enable-animations"], env, username)
+        cmd_get_sounds = wrap_user_cmd(["gsettings", "get", "org.gnome.desktop.sound", "event-sounds"], env, username)
+        
+        res_anim = subprocess.run(cmd_get_anim, env=env, capture_output=True, text=True)
+        if res_anim.returncode == 0:
+            initial_anim = res_anim.stdout.strip()
+            
+        res_sounds = subprocess.run(cmd_get_sounds, env=env, capture_output=True, text=True)
+        if res_sounds.returncode == 0:
+            initial_sounds = res_sounds.stdout.strip()
+    except Exception:
+        pass
+
     # 1. Try gnome-screenshot (standard on GNOME systems, supports Wayland natively)
     try:
         # Disable visual flash and shutter sound before screenshot (ignore fail)
@@ -531,6 +548,15 @@ def execute_screenshot():
             return filename
     except Exception:
         pass
+    finally:
+        # Restore initial settings
+        try:
+            gsettings_restore_anim = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", initial_anim], env, username)
+            gsettings_restore_sounds = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", initial_sounds], env, username)
+            subprocess.run(gsettings_restore_anim, env=env, stderr=subprocess.DEVNULL)
+            subprocess.run(gsettings_restore_sounds, env=env, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
     # 2. Try grim (Sway / Hyprland Wayland compositor screenshot tool)
     try:
@@ -1161,6 +1187,22 @@ def capture_screen_frame(env, username):
             img.convert("RGB").save(buffer, format="JPEG", quality=50)
             return buffer.getvalue()
 
+    initial_anim = "true"
+    initial_sounds = "true"
+    try:
+        cmd_get_anim = wrap_user_cmd(["gsettings", "get", "org.gnome.desktop.interface", "enable-animations"], combined_env, username)
+        cmd_get_sounds = wrap_user_cmd(["gsettings", "get", "org.gnome.desktop.sound", "event-sounds"], combined_env, username)
+        
+        res_anim = subprocess.run(cmd_get_anim, env=combined_env, capture_output=True, text=True)
+        if res_anim.returncode == 0:
+            initial_anim = res_anim.stdout.strip()
+            
+        res_sounds = subprocess.run(cmd_get_sounds, env=combined_env, capture_output=True, text=True)
+        if res_sounds.returncode == 0:
+            initial_sounds = res_sounds.stdout.strip()
+    except Exception:
+        pass
+
     # 1. Try gnome-screenshot (works on GNOME/X11/Wayland sessions)
     print("[DEBUG] Trying gnome-screenshot (silent)...")
     try:
@@ -1183,6 +1225,15 @@ def capture_screen_frame(env, username):
         print(f"[ERROR] gnome-screenshot exception: {e}")
         if os.path.exists(filename):
             os.remove(filename)
+    finally:
+        # Restore initial settings
+        try:
+            gsettings_restore_anim = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", initial_anim], combined_env, username)
+            gsettings_restore_sounds = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", initial_sounds], combined_env, username)
+            subprocess.run(gsettings_restore_anim, env=combined_env, stderr=subprocess.DEVNULL)
+            subprocess.run(gsettings_restore_sounds, env=combined_env, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
     # 2. Try Flameshot (silent, XWayland)
     print("[DEBUG] Trying Flameshot...")
@@ -1579,7 +1630,7 @@ def websocket_loop():
                         "command_id": cmd_id,
                         "status": result.get("status", "EXECUTED"),
                         "result_url": result.get("result_url"),
-                        "error_message": None
+                        "error_message": result.get("error_message")
                     }))
                 except Exception as e:
                     ws.send(json.dumps({
