@@ -123,15 +123,28 @@ EOF
 fi
 
 # 2. Stop running service if active
-if systemctl is-active --quiet sentinel-agent; then
+if command -v systemctl >/dev/null && systemctl is-active --quiet sentinel-agent; then
     echo "[INFO] Stopping running sentinel-agent service..."
     systemctl stop sentinel-agent
+elif [ -f /etc/init.d/sentinel-agent ]; then
+    echo "[INFO] Stopping running sentinel-agent service via init script..."
+    /etc/init.d/sentinel-agent stop || true
 fi
 
-# 3. Install system dependencies
+# 3. Install system dependencies (distro-agnostic detection loop)
 echo "[INFO] Installing system dependencies..."
-apt-get update -y || echo "[WARN] Package index update had warnings or errors, proceeding anyway..."
-apt-get install -y python3 python3-pip python3-venv portaudio19-dev libv4l-dev ffmpeg libxext6 libsm6 scrot -y
+if command -v apt-get >/dev/null; then
+    apt-get update -y || echo "[WARN] Package index update had warnings or errors, proceeding anyway..."
+    apt-get install -y python3 python3-pip python3-venv portaudio19-dev libv4l-dev ffmpeg libxext6 libsm6 scrot dbus -y
+elif command -v dnf >/dev/null; then
+    dnf install -y python3 python3-pip ffmpeg scrot portaudio-devel libv4l dbus
+elif command -v pacman >/dev/null; then
+    pacman -Sy --noconfirm python python-pip ffmpeg scrot portaudio libv4l dbus
+elif command -v apk >/dev/null; then
+    apk add python3 py3-pip ffmpeg scrot portaudio-dev v4l-utils-libs dbus
+else
+    echo "[WARN] No supported package manager found. Please ensure python3, ffmpeg, scrot, portaudio, and dbus are installed manually."
+fi
 
 # 4. Prepare installation directory
 mkdir -p "$INSTALL_DIR"
@@ -151,11 +164,14 @@ curl -s -o agent.py "$BACKEND_URL/agent.py"
 # 7. Install python requirements
 echo "[INFO] Installing pip dependencies..."
 ./venv/bin/pip3 install --upgrade pip
+# Install dbus-python if dbus headers are available, ignore failure since we fallback to dbus-send command calls
+./venv/bin/pip3 install dbus-python || echo "[INFO] dbus-python build skipped, using dbus-send fallback."
 ./venv/bin/pip3 install -r requirements.txt
 
-# 8. Set up systemd service
-echo "[INFO] Setting up systemd system service..."
-cat <<EOF > /etc/systemd/system/sentinel-agent.service
+# 8. Set up service wrapper based on init system
+if command -v systemctl >/dev/null; then
+    echo "[INFO] Setting up systemd system service..."
+    cat <<EOF > /etc/systemd/system/sentinel-agent.service
 [Unit]
 Description=Sentinel Device Remote Administration Agent
 After=network.target
@@ -173,11 +189,82 @@ RestartPreventExitStatus=99
 [Install]
 WantedBy=multi-user.target
 EOF
+    # Reload daemon and restart service
+    systemctl daemon-reload
+    systemctl enable sentinel-agent
+    systemctl start sentinel-agent
+    echo "[SUCCESS] Sentinel agent has been successfully installed and started!"
+    systemctl status sentinel-agent --no-pager
 
-# Reload daemon and restart service
-systemctl daemon-reload
-systemctl enable sentinel-agent
-systemctl start sentinel-agent
+elif [ -d /etc/init.d ]; then
+    echo "[INFO] Setting up SysVinit/OpenRC system service..."
+    
+    # Try OpenRC first if openrc-run is available
+    if [ -f /sbin/openrc-run ] || [ -f /usr/sbin/openrc-run ]; then
+        echo "[INFO] Deploying OpenRC runscript..."
+        cat <<EOF > /etc/init.d/sentinel-agent
+#!/sbin/openrc-run
+name="sentinel-agent"
+description="Sentinel Device Remote Administration Agent"
+command="$INSTALL_DIR/venv/bin/python3"
+command_args="$INSTALL_DIR/agent.py"
+pidfile="/run/sentinel-agent.pid"
+command_background="yes"
+export SENTINEL_CONFIG_PATH="$CONFIG_FILE"
+depend() {
+    need net
+}
+EOF
+        chmod +x /etc/init.d/sentinel-agent
+        rc-update add sentinel-agent default || true
+        rc-service sentinel-agent start || /etc/init.d/sentinel-agent start
+    else
+        # Standard SysVinit script
+        echo "[INFO] Deploying SysVinit script..."
+        cat <<EOF > /etc/init.d/sentinel-agent
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          sentinel-agent
+# Required-Start:    \$network \$remote_fs \$syslog
+# Required-Stop:     \$network \$remote_fs \$syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Sentinel Remote Agent
+### END INIT INFO
 
-echo "[SUCCESS] Sentinel agent has been successfully installed and started!"
-systemctl status sentinel-agent --no-pager
+DIR="$INSTALL_DIR"
+DAEMON="\$DIR/venv/bin/python3"
+DAEMON_ARGS="\$DIR/agent.py"
+PIDFILE="/var/run/sentinel-agent.pid"
+export SENTINEL_CONFIG_PATH="$CONFIG_FILE"
+
+case "\$1" in
+    start)
+        echo "Starting Sentinel Agent..."
+        start-stop-daemon --start --background --make-pidfile --pidfile \$PIDFILE --exec \$DAEMON -- \$DAEMON_ARGS
+        ;;
+    stop)
+        echo "Stopping Sentinel Agent..."
+        start-stop-daemon --stop --pidfile \$PIDFILE --retry 10
+        rm -f \$PIDFILE
+        ;;
+    restart)
+        \$0 stop
+        \$0 start
+        ;;
+    *)
+        echo "Usage: \$0 {start|stop|restart}"
+        exit 1
+esac
+exit 0
+EOF
+        chmod +x /etc/init.d/sentinel-agent
+        update-rc.d sentinel-agent defaults || true
+        /etc/init.d/sentinel-agent start
+    fi
+    echo "[SUCCESS] Sentinel agent has been successfully installed and started!"
+else
+    echo "[WARN] No supported init system service folder found (systemd/SysVinit/OpenRC missing). Starting agent directly in background..."
+    SENTINEL_CONFIG_PATH="$CONFIG_FILE" nohup "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/agent.py" >/var/log/sentinel-agent.log 2>&1 &
+    echo "[SUCCESS] Sentinel agent has been successfully started in the background."
+fi

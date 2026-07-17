@@ -207,8 +207,20 @@ def get_uptime():
             return int(uptime_seconds)
     except Exception:
         # Fallback using psutil
-        import psutil
-        return int(time.time() - psutil.boot_time())
+        try:
+            import psutil
+            return int(time.time() - psutil.boot_time())
+        except Exception:
+            # Fallback using /proc/stat btime
+            try:
+                with open('/proc/stat', 'r') as f:
+                    for line in f:
+                        if line.startswith('btime '):
+                            btime = int(line.split()[1])
+                            return int(time.time() - btime)
+            except Exception:
+                pass
+            return 0
 
 def get_wifi_ssid():
     # Try using nmcli
@@ -287,9 +299,9 @@ def get_nearby_wifi():
     return json.dumps(networks[:15])
 
 def get_network_info():
-    import psutil
     interfaces = {}
     try:
+        import psutil
         for interface_name, interface_addresses in psutil.net_if_addrs().items():
             # Skip loopback
             if interface_name == 'lo' or interface_name.startswith('loop'):
@@ -303,8 +315,54 @@ def get_network_info():
                     "netmask": address.netmask or ""
                 })
             interfaces[interface_name] = addrs
-    except Exception as e:
-        interfaces["error"] = str(e)
+    except Exception:
+        # Fallback 1: Parse ip -json address show (standard on Linux systems)
+        try:
+            out = subprocess.check_output(["ip", "-j", "addr", "show"], stderr=subprocess.DEVNULL).decode()
+            data = json.loads(out)
+            for item in data:
+                ifname = item.get("ifname", "")
+                if ifname == "lo" or ifname.startswith("loop"):
+                    continue
+                addrs = []
+                for addr_info in item.get("addr_info", []):
+                    family = addr_info.get("family", "")
+                    family_str = "IPv4" if family == "inet" else ("IPv6" if family == "inet6" else "MAC/Other")
+                    addrs.append({
+                        "family": family_str,
+                        "address": addr_info.get("local", ""),
+                        "netmask": addr_info.get("netmask", "")
+                    })
+                interfaces[ifname] = addrs
+        except Exception:
+            # Fallback 2: Parse /proc/net/dev and socket interface calls (low-level names listing)
+            try:
+                with open("/proc/net/dev", "r") as f:
+                    lines = f.readlines()
+                for line in lines[2:]:
+                    parts = line.split(":")
+                    if len(parts) >= 2:
+                        ifname = parts[0].strip()
+                        if ifname == "lo" or ifname.startswith("loop"):
+                            continue
+                        # Use socket to query IPv4 if possible
+                        import socket, fcntl, struct
+                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        try:
+                            ip_addr = socket.inet_ntoa(fcntl.ioctl(
+                                s.fileno(),
+                                0x8915,  # SIOCGIFADDR
+                                struct.pack('256s', ifname[:15].encode('utf-8'))
+                            )[20:24])
+                            interfaces[ifname] = [{
+                                "family": "IPv4",
+                                "address": ip_addr,
+                                "netmask": ""
+                            }]
+                        except Exception:
+                            interfaces[ifname] = [{"family": "Unknown", "address": "Active", "netmask": ""}]
+            except Exception:
+                pass
     return json.dumps(interfaces)
 
 def get_os_info():
@@ -364,21 +422,110 @@ def get_location_and_ip():
     }
 
 def gather_telemetry():
-    import psutil
+    battery_percent = None
+    battery_charging = None
     
-    battery = psutil.sensors_battery()
-    battery_percent = int(battery.percent) if battery else None
-    battery_charging = battery.power_plugged if battery else None
-    
+    # 1. Battery: Try psutil first, fallback to /sys/class/power_supply
+    try:
+        import psutil
+        battery = psutil.sensors_battery()
+        battery_percent = int(battery.percent) if battery else None
+        battery_charging = battery.power_plugged if battery else None
+    except Exception:
+        # Fallback to sysfs
+        try:
+            import glob
+            # Check capacity
+            cap_files = glob.glob("/sys/class/power_supply/BAT*/capacity")
+            if cap_files:
+                with open(cap_files[0], "r") as f:
+                    battery_percent = int(f.read().strip())
+            # Check status (Charging, Discharging, Full, Unknown)
+            stat_files = glob.glob("/sys/class/power_supply/BAT*/status")
+            if stat_files:
+                with open(stat_files[0], "r") as f:
+                    status = f.read().strip().lower()
+                    battery_charging = status == "charging"
+        except Exception:
+            pass
+
+    # 2. CPU Usage
+    cpu_usage = 0.0
+    try:
+        import psutil
+        cpu_usage = psutil.cpu_percent(interval=None)
+    except Exception:
+        # Pure Python /proc/stat CPU percent calculation
+        try:
+            def get_cpu_ticks():
+                with open("/proc/stat", "r") as f:
+                    first_line = f.readline()
+                parts = first_line.split()
+                # cpu  user nice system idle iowait irq softirq steal guest guest_nice
+                ticks = [float(x) for x in parts[1:]]
+                total = sum(ticks)
+                idle = ticks[3] + (ticks[4] if len(ticks) > 4 else 0.0)
+                return total, idle
+            t1, id1 = get_cpu_ticks()
+            time.sleep(0.1)
+            t2, id2 = get_cpu_ticks()
+            delta_total = t2 - t1
+            delta_idle = id2 - id1
+            if delta_total > 0:
+                cpu_usage = round(100.0 * (1.0 - delta_idle / delta_total), 1)
+        except Exception:
+            pass
+
+    # 3. RAM Usage
+    ram_usage = 0.0
+    try:
+        import psutil
+        ram_usage = psutil.virtual_memory().percent
+    except Exception:
+        # Pure Python /proc/meminfo parsing
+        try:
+            mem_info = {}
+            with open("/proc/meminfo", "r") as f:
+                for line in f:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        key = parts[0].strip()
+                        val = int(parts[1].replace("kB", "").strip())
+                        mem_info[key] = val
+            total = mem_info.get("MemTotal", 0)
+            available = mem_info.get("MemAvailable", mem_info.get("MemFree", 0) + mem_info.get("Buffers", 0) + mem_info.get("Cached", 0))
+            if total > 0:
+                used = total - available
+                ram_usage = round(100.0 * used / total, 1)
+        except Exception:
+            pass
+
+    # 4. Disk Usage
+    disk_usage = 0.0
+    try:
+        import psutil
+        disk_usage = psutil.disk_usage('/').percent
+    except Exception:
+        # Pure Python os.statvfs
+        try:
+            st = os.statvfs('/')
+            total = st.f_blocks * st.f_frsize
+            free = st.f_bfree * st.f_frsize
+            used = total - free
+            if total > 0:
+                disk_usage = round(100.0 * used / total, 1)
+        except Exception:
+            pass
+
     loc_data = get_location_and_ip()
     
     return {
         "uptime": get_uptime(),
         "battery_percent": battery_percent,
         "battery_charging": battery_charging,
-        "cpu_usage": psutil.cpu_percent(interval=None),
-        "ram_usage": psutil.virtual_memory().percent,
-        "disk_usage": psutil.disk_usage('/').percent,
+        "cpu_usage": cpu_usage,
+        "ram_usage": ram_usage,
+        "disk_usage": disk_usage,
         "public_ip": loc_data["public_ip"],
         "local_ip": get_local_ip(),
         "mac_address": get_mac_address(),
@@ -420,6 +567,72 @@ def get_x11_env():
     uid = os.getuid()
     import pwd
     
+    # Method 1: DBus query to systemd-logind (cleanest, safest systemd discovery method)
+    try:
+        import dbus
+        bus = dbus.SystemBus()
+        manager_obj = bus.get_object('org.freedesktop.login1', '/org/freedesktop/login1')
+        manager = dbus.Interface(manager_obj, 'org.freedesktop.login1.Manager')
+        sessions = manager.ListSessions()
+        
+        for session_info in sessions:
+            # session_info structure: [id, uid, user, seat, path]
+            session_uid = int(session_info[1])
+            if session_uid >= 1000 and session_uid < 65534:
+                session_path = session_info[4]
+                session_obj = bus.get_object('org.freedesktop.login1', session_path)
+                properties = dbus.Interface(session_obj, 'org.freedesktop.DBus.Properties')
+                
+                # Check session state
+                state = properties.Get('org.freedesktop.login1.Session', 'State')
+                if state in ['active', 'online']:
+                    # Extract active session parameters
+                    display = properties.Get('org.freedesktop.login1.Session', 'Display')
+                    if display:
+                        env["DISPLAY"] = str(display)
+                    
+                    try:
+                        # Extract xauth and other parameters from session object environment keys
+                        sess_env = properties.Get('org.freedesktop.login1.Session', 'Environment')
+                        for k, v in sess_env:
+                            if k in ["DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]:
+                                env[k] = str(v)
+                    except Exception:
+                        pass
+                        
+                    username = str(session_info[2])
+                    return env, username
+    except Exception:
+        pass
+
+    # Method 2: loginctl command-line fallback
+    try:
+        sessions_out = subprocess.check_output(["loginctl", "list-sessions"], stderr=subprocess.DEVNULL).decode()
+        for line in sessions_out.splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 3 and parts[0].isdigit():
+                sess_id = parts[0]
+                sess_uid = int(parts[1])
+                sess_user = parts[2]
+                if sess_uid >= 1000 and sess_uid < 65534:
+                    # Check detailed session info
+                    show_out = subprocess.check_output(["loginctl", "show-session", sess_id], stderr=subprocess.DEVNULL).decode()
+                    sess_env = {}
+                    for sline in show_out.splitlines():
+                        if "=" in sline:
+                            sk, sv = sline.split("=", 1)
+                            sess_env[sk] = sv
+                    
+                    # Check if session has graphical parameters
+                    if "Display" in sess_env or "DISPLAY" in sess_env or "WAYLAND_DISPLAY" in sess_env:
+                        for key in ["DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]:
+                            if key in sess_env and sess_env[key]:
+                                env[key] = sess_env[key]
+                        return env, sess_user
+    except Exception:
+        pass
+
+    # Method 3: Scan /proc (original fallback method)
     pids = []
     for pid in os.listdir("/proc"):
         if pid.isdigit():
@@ -517,48 +730,61 @@ def execute_screenshot():
     env, username = get_x11_env()
     uid = os.getuid()
     
-    # Store initial settings
+    # Only access gsettings if desktop is GNOME to prevent errors/logs on other platforms
+    is_gnome = "gnome" in env.get("XDG_CURRENT_DESKTOP", "").lower() or "ubuntu" in env.get("XDG_CURRENT_DESKTOP", "").lower()
     initial_anim = "true"
     initial_sounds = "true"
-    try:
-        cmd_get_anim = wrap_user_cmd(["gsettings", "get", "org.gnome.desktop.interface", "enable-animations"], env, username)
-        cmd_get_sounds = wrap_user_cmd(["gsettings", "get", "org.gnome.desktop.sound", "event-sounds"], env, username)
-        
-        res_anim = subprocess.run(cmd_get_anim, env=env, capture_output=True, text=True)
-        if res_anim.returncode == 0:
-            initial_anim = res_anim.stdout.strip()
+    
+    if is_gnome:
+        try:
+            cmd_get_anim = wrap_user_cmd(["gsettings", "get", "org.gnome.desktop.interface", "enable-animations"], env, username)
+            cmd_get_sounds = wrap_user_cmd(["gsettings", "get", "org.gnome.desktop.sound", "event-sounds"], env, username)
             
-        res_sounds = subprocess.run(cmd_get_sounds, env=env, capture_output=True, text=True)
-        if res_sounds.returncode == 0:
-            initial_sounds = res_sounds.stdout.strip()
-    except Exception:
-        pass
+            res_anim = subprocess.run(cmd_get_anim, env=env, capture_output=True, text=True)
+            if res_anim.returncode == 0:
+                initial_anim = res_anim.stdout.strip()
+                
+            res_sounds = subprocess.run(cmd_get_sounds, env=env, capture_output=True, text=True)
+            if res_sounds.returncode == 0:
+                initial_sounds = res_sounds.stdout.strip()
+        except Exception:
+            pass
 
     # 1. Try gnome-screenshot (standard on GNOME systems, supports Wayland natively)
-    try:
-        # Disable visual flash and shutter sound before screenshot (ignore fail)
-        gsettings_cmd_anim = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", "false"], env, username)
-        gsettings_cmd_sounds = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", "false"], env, username)
-        subprocess.run(gsettings_cmd_anim, env=env, stderr=subprocess.DEVNULL)
-        subprocess.run(gsettings_cmd_sounds, env=env, stderr=subprocess.DEVNULL)
+    if is_gnome:
+        try:
+            # Disable visual flash and shutter sound before screenshot (ignore fail)
+            gsettings_cmd_anim = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", "false"], env, username)
+            gsettings_cmd_sounds = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", "false"], env, username)
+            subprocess.run(gsettings_cmd_anim, env=env, stderr=subprocess.DEVNULL)
+            subprocess.run(gsettings_cmd_sounds, env=env, stderr=subprocess.DEVNULL)
 
-        cmd = wrap_user_cmd(["gnome-screenshot", "-f", filename], env, username)
+            cmd = wrap_user_cmd(["gnome-screenshot", "-f", filename], env, username)
+            subprocess.run(cmd, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if os.path.exists(filename):
+                return filename
+        except Exception:
+            pass
+        finally:
+            # Restore initial settings
+            try:
+                gsettings_restore_anim = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", initial_anim], env, username)
+                gsettings_restore_sounds = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", initial_sounds], env, username)
+                subprocess.run(gsettings_restore_anim, env=env, stderr=subprocess.DEVNULL)
+                subprocess.run(gsettings_restore_sounds, env=env, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+    # 2. Try spectacle (KDE Plasma native screenshot tool)
+    try:
+        cmd = wrap_user_cmd(["spectacle", "-b", "-n", "-o", filename], env, username)
         subprocess.run(cmd, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(filename):
             return filename
     except Exception:
         pass
-    finally:
-        # Restore initial settings
-        try:
-            gsettings_restore_anim = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", initial_anim], env, username)
-            gsettings_restore_sounds = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", initial_sounds], env, username)
-            subprocess.run(gsettings_restore_anim, env=env, stderr=subprocess.DEVNULL)
-            subprocess.run(gsettings_restore_sounds, env=env, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
 
-    # 2. Try grim (Sway / Hyprland Wayland compositor screenshot tool)
+    # 3. Try grim (Sway / Hyprland Wayland compositor screenshot tool)
     try:
         cmd = wrap_user_cmd(["grim", filename], env, username)
         subprocess.run(cmd, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -567,7 +793,34 @@ def execute_screenshot():
     except Exception:
         pass
 
-    # 3. Try scrot (very lightweight X11 fallback tool)
+    # 4. Try Freedesktop portal screenshot via DBus (Desktop environment independent fallback)
+    try:
+        # Standard org.freedesktop.portal.Screenshot call using dbus-send
+        cmd = wrap_user_cmd([
+            "dbus-send", "--print-reply", "--dest=org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Screenshot.Screenshot",
+            "string:", "dict:string:variant:interactive,boolean:false"
+        ], env, username)
+        res = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=10)
+        # Note: Portal screenshots are usually saved in the user's Pictures folder or returned via response.
+        # If it returns successfully and we can find a new screenshot in standard directories, copy it.
+        if res.returncode == 0:
+            import glob
+            # Look for recent screenshot images in ~/Pictures
+            pictures_path = os.path.expanduser(f"~{username}/Pictures") if username != "root" else "/root/Pictures"
+            recent_files = glob.glob(os.path.join(pictures_path, "Screenshot*.png"))
+            if recent_files:
+                newest = max(recent_files, key=os.path.path.getmtime)
+                # If modified within the last 15 seconds
+                if time.time() - os.path.getmtime(newest) < 15:
+                    import shutil
+                    shutil.copy2(newest, filename)
+                    return filename
+    except Exception:
+        pass
+
+    # 5. Try scrot (very lightweight X11 fallback tool)
     try:
         cmd = wrap_user_cmd(["scrot", filename], env, username)
         subprocess.run(cmd, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -602,55 +855,105 @@ def execute_screenshot():
                 os.environ.pop("XAUTHORITY", None)
 
 def execute_webcam():
-    global cv2
-    if cv2 is None:
-        try:
-            import cv2
-        except Exception as e:
-            raise Exception(f"OpenCV (cv2) is not available: {e}")
-    if cv2 is None:
-        raise Exception("OpenCV (cv2) library is not available.")
     filename = f"/tmp/webcam_{int(time.time())}.png"
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        raise Exception("Could not open webcam or webcam not connected.")
     
-    # Warm up camera
-    for _ in range(5):
-        cap.read()
-        
-    ret, frame = cap.read()
-    if not ret:
-        cap.release()
-        raise Exception("Failed to grab webcam frame.")
-        
-    cv2.imwrite(filename, frame)
-    cap.release()
-    return filename
+    # 1. Try OpenCV (primary method)
+    global cv2
+    try:
+        if cv2 is None:
+            import cv2
+        if cv2 is not None:
+            cap = cv2.VideoCapture(0)
+            if cap.isOpened():
+                # Warm up camera
+                for _ in range(5):
+                    cap.read()
+                ret, frame = cap.read()
+                cap.release()
+                if ret:
+                    cv2.imwrite(filename, frame)
+                    if os.path.exists(filename):
+                        return filename
+    except Exception:
+        pass
+
+    # 2. Try FFmpeg command-line capture (works without python OpenCV dependencies)
+    env, username = get_x11_env()
+    try:
+        # ffmpeg -y -f v4l2 -video_size 640x480 -i /dev/video0 -frames:v 1 /tmp/webcam.png
+        cmd = wrap_user_cmd(["ffmpeg", "-y", "-f", "v4l2", "-video_size", "640x480", "-i", "/dev/video0", "-frames:v", "1", filename], env, username)
+        res = subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res.returncode == 0 and os.path.exists(filename):
+            return filename
+    except Exception:
+        pass
+
+    # 3. Try fswebcam command-line capture (extremely lightweight utility fallback)
+    try:
+        cmd = wrap_user_cmd(["fswebcam", "-r", "640x480", "--no-banner", filename], env, username)
+        res = subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res.returncode == 0 and os.path.exists(filename):
+            return filename
+    except Exception:
+        pass
+
+    raise Exception("All webcam capture methods failed (OpenCV, FFmpeg, and fswebcam).")
 
 def display_message(text):
     import subprocess
     env, username = get_x11_env()
     uid = os.getuid()
         
-    # Attempt zenity warning (list form — no shell injection)
+    # 1. Attempt zenity warning (GNOME/GTK default)
     try:
         cmd = wrap_user_cmd(["zenity", "--warning", f"--text={text}", "--title=Sentinel Remote System", "--timeout=30"], env, username)
-        subprocess.Popen(
-            cmd,
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+        subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except Exception:
         pass
         
-    # Fallback to notify-send (list form)
+    # 2. Attempt kdialog warning (KDE Plasma default)
+    try:
+        cmd = wrap_user_cmd(["kdialog", "--title", "Sentinel Remote System", "--msgbox", text], env, username)
+        subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        pass
+
+    # 3. Attempt DBus Desktop Notification (direct interface call, client wrapper independent)
+    try:
+        # Calls the Freedesktop notification interface
+        cmd = wrap_user_cmd([
+            "dbus-send", "--print-reply", "--dest=org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications", "org.freedesktop.Notifications.Notify",
+            "string:sentinel", "uint32:0", "string:", "string:Sentinel Remote System",
+            f"string:{text}", "array:string:", "dict:string:variant:", "int32:-1"
+        ], env, username)
+        subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        return True
+    except Exception:
+        pass
+
+    # 4. Fallback to notify-send
     try:
         cmd = wrap_user_cmd(["notify-send", "Sentinel Remote System", text], env, username)
-        subprocess.Popen(
-            cmd,
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+        subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        pass
+
+    # 5. Fallback to classic X11 xmessage window
+    try:
+        cmd = wrap_user_cmd(["xmessage", "-center", "-timeout", "30", f"Sentinel Remote System: {text}"], env, username)
+        subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        pass
+
+    # 6. Fallback to wall broadcast (write to all admin terminal consoles, works on headless environments)
+    try:
+        # wall runs directly from root to display system-wide messages
+        subprocess.run(f"echo 'Sentinel Remote System: {text}' | wall", shell=True, stderr=subprocess.DEVNULL)
         return True
     except Exception:
         return False
@@ -663,16 +966,40 @@ def trigger_alarm():
     # If already running, do not spawn another instance
     if alarm_process and alarm_process.poll() is None:
         return True
-    try:
-        env, username = get_x11_env()
-        # speaker-test should be run as the session user to access their PulseAudio/PipeWire session
-        cmd = wrap_user_cmd(["speaker-test", "-t", "sine", "-f", "800"], env, username)
-        alarm_process = subprocess.Popen(
-            cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        return True
-    except Exception:
-        return False
+        
+    env, username = get_x11_env()
+    
+    # Try a set of modern sound-server utilities before falling back to direct ALSA speaker-test
+    sound_cmds = [
+        # PulseAudio Play (using standard system alert sounds if they exist)
+        ["paplay", "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapse.oga"],
+        ["paplay", "/usr/share/sounds/sound-theme-freedesktop/stereo/alarm-clock-elapse.oga"],
+        # PipeWire Play
+        ["pw-play", "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapse.oga"],
+        # ALSA standard player
+        ["aplay", "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapse.oga"],
+        # Sox Player
+        ["play", "-n", "synth", "10", "sine", "800"],
+        # speaker-test ALSA direct hardware driver fallback
+        ["speaker-test", "-t", "sine", "-f", "800"]
+    ]
+    
+    for cmd in sound_cmds:
+        try:
+            # Check if command is available on system
+            if subprocess.run(["which", cmd[0]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                wrapped_cmd = wrap_user_cmd(cmd, env, username)
+                alarm_process = subprocess.Popen(
+                    wrapped_cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                # Verify it started successfully without exiting immediately
+                time.sleep(0.5)
+                if alarm_process.poll() is None:
+                    return True
+        except Exception:
+            continue
+            
+    return False
 
 def stop_alarm():
     global alarm_process
@@ -685,11 +1012,12 @@ def stop_alarm():
             pass
         alarm_process = None
     
-    # Fallback to killing any remaining speaker-test processes
-    try:
-        subprocess.run("pkill -f speaker-test", shell=True, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
+    # Fallback to killing any remaining alert players
+    for proc_name in ["speaker-test", "paplay", "pw-play", "aplay", "play"]:
+        try:
+            subprocess.run(f"pkill -f {proc_name}", shell=True, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
     return True
 
 def execute_lock_screen():
@@ -699,14 +1027,29 @@ def execute_lock_screen():
     lock_commands = [
         ["loginctl", "lock-sessions"],
         ["loginctl", "lock-session"],
+        # KDE Plasma Lock Screen via DBus
+        ["dbus-send", "--dest=org.freedesktop.ScreenSaver", "/ScreenSaver", "org.freedesktop.ScreenSaver.Lock"],
+        # GNOME Lock Screen via DBus
+        ["dbus-send", "--type=method_call", "--dest=org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver.Lock"],
+        # Cinnamon (Linux Mint) Locker
+        ["cinnamon-screensaver-command", "-l"],
+        # MATE Desktop Locker
+        ["mate-screensaver-command", "-l"],
+        # Sway / wlroots Wayland Locker
+        ["swaylock"],
+        # Generic Xdg Screensaver
         ["xdg-screensaver", "lock"],
+        # GNOME Screensaver command fallback
         ["gnome-screensaver-command", "-l"],
-        ["dbus-send", "--type=method_call", "--dest=org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver.Lock"]
+        # Generic X11 Custom/Tiling lockers
+        ["i3lock"],
+        ["betterlockscreen", "-l"],
+        ["slock"]
     ]
     for cmd in lock_commands:
         try:
-            # For loginctl, running as root directly is better; for others, run as user session
-            if cmd[0] != "loginctl":
+            # For loginctl and dbus commands, run direct; for specific system tools wrap them
+            if cmd[0] not in ["loginctl", "dbus-send"]:
                 cmd = wrap_user_cmd(cmd, env, username)
             res = subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if res.returncode == 0:
@@ -887,20 +1230,59 @@ def execute_command(command_type, payload, command_id=None):
 
     elif command_type == "PROCESSES":
         try:
-            import psutil
             if payload and payload.startswith("kill "):
                 pid_to_kill = int(payload.split()[1])
-                p = psutil.Process(pid_to_kill)
-                p.terminate()
+                try:
+                    import psutil
+                    p = psutil.Process(pid_to_kill)
+                    p.terminate()
+                except Exception:
+                    # Fallback to direct os.kill
+                    import signal
+                    os.kill(pid_to_kill, signal.SIGTERM)
                 return {"status": "EXECUTED", "result_url": f"Process {pid_to_kill} terminated."}
             else:
                 proc_list = []
-                for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
-                    try:
-                        proc_list.append(proc.info)
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
-                proc_list = sorted(proc_list, key=lambda x: x.get('cpu_percent') or 0, reverse=True)[:50]
+                try:
+                    import psutil
+                    for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
+                        try:
+                            proc_list.append(proc.info)
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                except Exception:
+                    # Pure Python fallback: parse /proc directories
+                    for pid_dir in os.listdir("/proc"):
+                        if pid_dir.isdigit():
+                            pid = int(pid_dir)
+                            try:
+                                name = f"pid_{pid}"
+                                mem_percent = 0.0
+                                with open(f"/proc/{pid}/status", "r") as f:
+                                    for line in f:
+                                        if line.startswith("Name:"):
+                                            name = line.split(":", 1)[1].strip()
+                                        elif line.startswith("VmRSS:"):
+                                            rss_kb = int(line.split(":", 1)[1].replace("kB", "").strip())
+                                            try:
+                                                total_mem = 1.0
+                                                with open("/proc/meminfo", "r") as mf:
+                                                    for mline in mf:
+                                                        if mline.startswith("MemTotal:"):
+                                                            total_mem = float(mline.split(":")[1].replace("kB", "").strip())
+                                                            break
+                                                mem_percent = round(100.0 * rss_kb / total_mem, 2)
+                                            except Exception:
+                                                pass
+                                proc_list.append({
+                                    "pid": pid,
+                                    "name": name,
+                                    "cpu_percent": 0.0,  # 0.0 without complex CPU sampling
+                                    "memory_percent": mem_percent
+                                })
+                            except Exception:
+                                pass
+                proc_list = sorted(proc_list, key=lambda x: x.get('cpu_percent') or x.get('memory_percent') or 0, reverse=True)[:50]
                 return {"status": "EXECUTED", "result_url": json.dumps(proc_list)}
         except Exception as e:
             return {"status": "FAILED", "error_message": str(e)}
@@ -1187,53 +1569,72 @@ def capture_screen_frame(env, username):
             img.convert("RGB").save(buffer, format="JPEG", quality=50)
             return buffer.getvalue()
 
+    is_gnome = "gnome" in combined_env.get("XDG_CURRENT_DESKTOP", "").lower() or "ubuntu" in combined_env.get("XDG_CURRENT_DESKTOP", "").lower()
     initial_anim = "true"
     initial_sounds = "true"
-    try:
-        cmd_get_anim = wrap_user_cmd(["gsettings", "get", "org.gnome.desktop.interface", "enable-animations"], combined_env, username)
-        cmd_get_sounds = wrap_user_cmd(["gsettings", "get", "org.gnome.desktop.sound", "event-sounds"], combined_env, username)
-        
-        res_anim = subprocess.run(cmd_get_anim, env=combined_env, capture_output=True, text=True)
-        if res_anim.returncode == 0:
-            initial_anim = res_anim.stdout.strip()
+    
+    if is_gnome:
+        try:
+            cmd_get_anim = wrap_user_cmd(["gsettings", "get", "org.gnome.desktop.interface", "enable-animations"], combined_env, username)
+            cmd_get_sounds = wrap_user_cmd(["gsettings", "get", "org.gnome.desktop.sound", "event-sounds"], combined_env, username)
             
-        res_sounds = subprocess.run(cmd_get_sounds, env=combined_env, capture_output=True, text=True)
-        if res_sounds.returncode == 0:
-            initial_sounds = res_sounds.stdout.strip()
-    except Exception:
-        pass
+            res_anim = subprocess.run(cmd_get_anim, env=combined_env, capture_output=True, text=True)
+            if res_anim.returncode == 0:
+                initial_anim = res_anim.stdout.strip()
+                
+            res_sounds = subprocess.run(cmd_get_sounds, env=combined_env, capture_output=True, text=True)
+            if res_sounds.returncode == 0:
+                initial_sounds = res_sounds.stdout.strip()
+        except Exception:
+            pass
 
     # 1. Try gnome-screenshot (works on GNOME/X11/Wayland sessions)
-    print("[DEBUG] Trying gnome-screenshot (silent)...")
-    try:
-        gsettings_cmd_anim = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", "false"], combined_env, username)
-        gsettings_cmd_sounds = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", "false"], combined_env, username)
-        subprocess.run(gsettings_cmd_anim, env=combined_env, stderr=subprocess.DEVNULL)
-        subprocess.run(gsettings_cmd_sounds, env=combined_env, stderr=subprocess.DEVNULL)
+    if is_gnome:
+        print("[DEBUG] Trying gnome-screenshot (silent)...")
+        try:
+            gsettings_cmd_anim = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", "false"], combined_env, username)
+            gsettings_cmd_sounds = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", "false"], combined_env, username)
+            subprocess.run(gsettings_cmd_anim, env=combined_env, stderr=subprocess.DEVNULL)
+            subprocess.run(gsettings_cmd_sounds, env=combined_env, stderr=subprocess.DEVNULL)
 
-        cmd = wrap_user_cmd(["gnome-screenshot", "-f", filename], combined_env, username)
+            cmd = wrap_user_cmd(["gnome-screenshot", "-f", filename], combined_env, username)
+            result = subprocess.run(cmd, env=combined_env, check=False,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"[DEBUG] gnome-screenshot returncode: {result.returncode}")
+            if os.path.exists(filename):
+                data = convert_png_to_jpeg_bytes()
+                os.remove(filename)
+                return data
+            else:
+                print("[WARN] gnome-screenshot did not produce a screenshot file.")
+        except Exception as e:
+            print(f"[ERROR] gnome-screenshot exception: {e}")
+            if os.path.exists(filename):
+                os.remove(filename)
+        finally:
+            # Restore initial settings
+            try:
+                gsettings_restore_anim = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", initial_anim], combined_env, username)
+                gsettings_restore_sounds = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", initial_sounds], combined_env, username)
+                subprocess.run(gsettings_restore_anim, env=combined_env, stderr=subprocess.DEVNULL)
+                subprocess.run(gsettings_restore_sounds, env=combined_env, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+    # 1.5. Try spectacle (KDE Plasma native screenshot tool)
+    print("[DEBUG] Trying spectacle...")
+    try:
+        cmd = wrap_user_cmd(["spectacle", "-b", "-n", "-o", filename], combined_env, username)
         result = subprocess.run(cmd, env=combined_env, check=False,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"[DEBUG] gnome-screenshot returncode: {result.returncode}")
         if os.path.exists(filename):
             data = convert_png_to_jpeg_bytes()
             os.remove(filename)
             return data
-        else:
-            print("[WARN] gnome-screenshot did not produce a screenshot file.")
     except Exception as e:
-        print(f"[ERROR] gnome-screenshot exception: {e}")
+        print(f"[ERROR] spectacle exception: {e}")
         if os.path.exists(filename):
             os.remove(filename)
-    finally:
-        # Restore initial settings
-        try:
-            gsettings_restore_anim = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", initial_anim], combined_env, username)
-            gsettings_restore_sounds = wrap_user_cmd(["gsettings", "set", "org.gnome.desktop.sound", "event-sounds", initial_sounds], combined_env, username)
-            subprocess.run(gsettings_restore_anim, env=combined_env, stderr=subprocess.DEVNULL)
-            subprocess.run(gsettings_restore_sounds, env=combined_env, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
 
     # 2. Try Flameshot (silent, XWayland)
     print("[DEBUG] Trying Flameshot...")
